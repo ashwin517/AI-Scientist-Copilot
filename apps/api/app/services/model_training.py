@@ -1,4 +1,5 @@
 from math import ceil
+import json
 from typing import Any
 
 import pandas as pd
@@ -7,7 +8,11 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
-from app.schemas.models import FeatureImportance, ModelTrainingResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.db.models import Dataset, ModelRun
+from app.schemas.models import FeatureImportance, ModelRunRead, ModelTrainingResponse
 
 
 MIN_TRAINING_ROWS = 5
@@ -63,12 +68,76 @@ def train_baseline_model(
 
     return ModelTrainingResponse(
         problem_type=problem_type,
+        task_type=problem_type,
         model_type=type(model).__name__,
+        target_column=target_column,
         metrics=metrics,
         feature_importance=_build_feature_importance(
             list(encoded_x.columns),
             model.feature_importances_,
         ),
+    )
+
+
+def train_and_persist_baseline_model(
+    db: Session,
+    project_id: int,
+    dataset: Dataset,
+    target_column: str,
+) -> ModelTrainingResponse:
+    rows = json.loads(dataset.raw_data_json)
+    result = train_baseline_model(rows, target_column)
+    model_run = ModelRun(
+        project_id=project_id,
+        dataset_id=dataset.id,
+        target_column=target_column,
+        task_type=result.problem_type,
+        model_type=result.model_type,
+        metrics_json=json.dumps(result.metrics),
+        feature_importance_json=json.dumps(
+            [item.model_dump() for item in result.feature_importance]
+        ),
+    )
+    db.add(model_run)
+    db.commit()
+    db.refresh(model_run)
+
+    return ModelTrainingResponse(
+        model_run_id=model_run.id,
+        project_id=project_id,
+        dataset_id=dataset.id,
+        problem_type=result.problem_type,
+        task_type=result.problem_type,
+        model_type=result.model_type,
+        target_column=target_column,
+        metrics=result.metrics,
+        feature_importance=result.feature_importance,
+    )
+
+
+def list_project_model_runs(db: Session, project_id: int) -> list[ModelRun]:
+    result = db.execute(
+        select(ModelRun)
+        .where(ModelRun.project_id == project_id)
+        .order_by(ModelRun.created_at.desc(), ModelRun.id.desc())
+    )
+    return list(result.scalars().all())
+
+
+def model_run_to_read_data(model_run: ModelRun) -> ModelRunRead:
+    return ModelRunRead(
+        id=model_run.id,
+        project_id=model_run.project_id,
+        dataset_id=model_run.dataset_id,
+        target_column=model_run.target_column,
+        task_type=model_run.task_type,
+        model_type=model_run.model_type,
+        metrics=json.loads(model_run.metrics_json),
+        feature_importance=[
+            FeatureImportance(**item)
+            for item in json.loads(model_run.feature_importance_json)
+        ],
+        created_at=model_run.created_at,
     )
 
 

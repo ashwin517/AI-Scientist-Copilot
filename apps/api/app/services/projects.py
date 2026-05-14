@@ -20,3 +20,8 @@ def list_projects(db: Session) -> list[Project]:
 
 def get_project(db: Session, project_id: int) -> Project | None:
     return db.get(Project, project_id)
+
+
+def delete_project(db: Session, project: Project) -> None:
+    db.delete(project)
+    db.commit()

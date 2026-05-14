@@ -3,7 +3,12 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.project import ProjectCreate, ProjectRead
-from app.services.projects import create_project, get_project, list_projects
+from app.services.projects import (
+    create_project,
+    delete_project,
+    get_project,
+    list_projects,
+)
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -34,3 +39,18 @@ def get_project_route(
             detail="Project not found",
         )
     return project
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project_route(
+    project_id: int,
+    db: Session = Depends(get_db),
+) -> None:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    delete_project(db, project)

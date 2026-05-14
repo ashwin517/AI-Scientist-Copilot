@@ -5,8 +5,27 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import {
+  BarChart3,
+  ChevronDown,
+  ChevronUp,
+  Files,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Upload,
+  X,
+} from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 
@@ -41,16 +60,38 @@ type DatasetUploadPreview = {
   };
 };
 
+type DatasetUploadResult = {
+  dataset: Dataset;
+  preview: DatasetUploadPreview;
+};
+
 type FeatureImportance = {
   feature: string;
   importance: number;
 };
 
 type ModelTrainingResult = {
+  model_run_id?: number | null;
+  project_id?: number | null;
+  dataset_id?: number | null;
   problem_type: string;
+  task_type?: string | null;
+  model_type: string;
+  target_column?: string | null;
+  metrics: Record<string, number>;
+  feature_importance: FeatureImportance[];
+};
+
+type ModelRun = {
+  id: number;
+  project_id: number;
+  dataset_id: number | null;
+  target_column: string;
+  task_type: string;
   model_type: string;
   metrics: Record<string, number>;
   feature_importance: FeatureImportance[];
+  created_at: string;
 };
 
 type ChatMessage = {
@@ -69,6 +110,8 @@ type DatasetChatSummary = {
   profile: DatasetUploadPreview["profile"];
 };
 
+type WorkbenchTab = "upload" | "files" | "model";
+
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
@@ -81,15 +124,27 @@ export default function Home() {
   const [targetColumn, setTargetColumn] = useState("");
   const [modelTrainingResult, setModelTrainingResult] =
     useState<ModelTrainingResult | null>(null);
+  const [modelRuns, setModelRuns] = useState<ModelRun[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
+  const [activeWorkbenchTab, setActiveWorkbenchTab] =
+    useState<WorkbenchTab>("upload");
+  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(true);
+  const [isWorkbenchPanelOpen, setIsWorkbenchPanelOpen] = useState(true);
+  const [isCopilotPanelOpen, setIsCopilotPanelOpen] = useState(true);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [isLoadingDatasets, setIsLoadingDatasets] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isUploadingCsv, setIsUploadingCsv] = useState(false);
-  const [isSavingDataset, setIsSavingDataset] = useState(false);
   const [isTrainingModel, setIsTrainingModel] = useState(false);
+  const [isLoadingModelRuns, setIsLoadingModelRuns] = useState(false);
   const [isSendingChatMessage, setIsSendingChatMessage] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<number | null>(
+    null,
+  );
+  const [deletingDatasetId, setDeletingDatasetId] = useState<number | null>(
+    null,
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
@@ -97,6 +152,35 @@ export default function Home() {
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects],
   );
+
+  const latestDataset = datasets[0] ?? null;
+
+  const modelDataset = useMemo(() => {
+    if (latestDataset) {
+      const firstRow = latestDataset.data[0] ?? {};
+      return {
+        datasetId: latestDataset.id,
+        filename: latestDataset.filename,
+        rows: latestDataset.row_count,
+        columns: latestDataset.column_count,
+        columnNames: Object.keys(firstRow),
+        data: latestDataset.data,
+      };
+    }
+
+    if (!uploadPreview) {
+      return null;
+    }
+
+    return {
+      datasetId: null,
+      filename: uploadPreview.filename,
+      rows: uploadPreview.rows,
+      columns: uploadPreview.columns,
+      columnNames: uploadPreview.column_names,
+      data: uploadPreview.data,
+    };
+  }, [latestDataset, uploadPreview]);
 
   const datasetChatSummary = useMemo<DatasetChatSummary | null>(() => {
     if (!uploadPreview) {
@@ -112,6 +196,23 @@ export default function Home() {
       profile: uploadPreview.profile,
     };
   }, [uploadPreview]);
+
+  useEffect(() => {
+    if (!modelDataset) {
+      setTargetColumn("");
+      return;
+    }
+
+    setTargetColumn((currentTargetColumn) => {
+      if (
+        currentTargetColumn &&
+        modelDataset.columnNames.includes(currentTargetColumn)
+      ) {
+        return currentTargetColumn;
+      }
+      return modelDataset.columnNames[0] ?? "";
+    });
+  }, [modelDataset]);
 
   const loadDatasets = useCallback(async (projectId: number) => {
     try {
@@ -149,6 +250,27 @@ export default function Home() {
       setErrorMessage(
         error instanceof Error ? error.message : "Could not load chat history.",
       );
+    }
+  }, []);
+
+  const loadModelRuns = useCallback(async (projectId: number) => {
+    try {
+      setIsLoadingModelRuns(true);
+      const response = await fetch(
+        `${API_BASE_URL}/models/projects/${projectId}/model-runs`,
+      );
+      if (!response.ok) {
+        throw new Error("Could not load model runs.");
+      }
+
+      setModelRuns((await response.json()) as ModelRun[]);
+    } catch (error) {
+      setModelRuns([]);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not load model runs.",
+      );
+    } finally {
+      setIsLoadingModelRuns(false);
     }
   }, []);
 
@@ -191,6 +313,7 @@ export default function Home() {
     setSelectedCsvFile(null);
     setTargetColumn("");
     setModelTrainingResult(null);
+    setModelRuns([]);
     setChatMessages([]);
     setChatInput("");
     setSuccessMessage(null);
@@ -202,7 +325,8 @@ export default function Home() {
 
     loadDatasets(activeProjectId);
     loadChatHistory(activeProjectId);
-  }, [activeProjectId, loadChatHistory, loadDatasets]);
+    loadModelRuns(activeProjectId);
+  }, [activeProjectId, loadChatHistory, loadDatasets, loadModelRuns]);
 
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -248,8 +372,51 @@ export default function Home() {
     }
   }
 
+  async function handleDeleteProject(project: Project) {
+    const confirmed = window.confirm(
+      `Delete project "${project.name}" and all of its datasets and chat history?`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setDeletingProjectId(project.id);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+
+      const response = await fetch(`${API_BASE_URL}/projects/${project.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not delete project.");
+      }
+
+      const remainingProjects = projects.filter(
+        (currentProject) => currentProject.id !== project.id,
+      );
+      setProjects(remainingProjects);
+      if (activeProjectId === project.id) {
+        setActiveProjectId(remainingProjects[0]?.id ?? null);
+      }
+      setSuccessMessage("Project deleted.");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not delete project.",
+      );
+    } finally {
+      setDeletingProjectId(null);
+    }
+  }
+
   async function handleUploadPreview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!activeProjectId) {
+      setErrorMessage("Create or select a project before uploading a dataset.");
+      return;
+    }
 
     if (!selectedCsvFile) {
       setErrorMessage("Choose a CSV file first.");
@@ -264,79 +431,91 @@ export default function Home() {
       setErrorMessage(null);
       setSuccessMessage(null);
 
-      const response = await fetch(`${API_BASE_URL}/datasets/upload-preview`, {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${activeProjectId}/datasets/upload`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
 
       if (!response.ok) {
-        throw new Error("Could not preview CSV.");
+        const errorBody = (await response.json().catch(() => null)) as {
+          detail?: string;
+        } | null;
+        throw new Error(errorBody?.detail || "Could not upload CSV.");
       }
 
-      const preview = (await response.json()) as DatasetUploadPreview;
-      setUploadPreview(preview);
-      setTargetColumn(preview.column_names[0] ?? "");
+      const result = (await response.json()) as DatasetUploadResult;
+      setUploadPreview(result.preview);
+      setTargetColumn(result.preview.column_names[0] ?? "");
       setModelTrainingResult(null);
+      setSuccessMessage(null);
+      setSelectedCsvFile(null);
+      setActiveWorkbenchTab("files");
+      await loadDatasets(activeProjectId);
     } catch (error) {
       setUploadPreview(null);
       setTargetColumn("");
       setModelTrainingResult(null);
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not preview CSV.",
+        error instanceof Error ? error.message : "Could not upload CSV.",
       );
     } finally {
       setIsUploadingCsv(false);
     }
   }
 
-  async function handleSaveDataset() {
-    if (!activeProjectId || !uploadPreview) {
+  async function handleDeleteDataset(dataset: Dataset) {
+    if (!activeProjectId) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete dataset "${dataset.filename}"?`);
+    if (!confirmed) {
       return;
     }
 
     try {
-      setIsSavingDataset(true);
+      setDeletingDatasetId(dataset.id);
       setErrorMessage(null);
       setSuccessMessage(null);
 
       const response = await fetch(
-        `${API_BASE_URL}/projects/${activeProjectId}/datasets`,
+        `${API_BASE_URL}/projects/${activeProjectId}/datasets/${dataset.id}`,
         {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            filename: uploadPreview.filename,
-            row_count: uploadPreview.rows,
-            column_count: uploadPreview.columns,
-            data: uploadPreview.data,
-          }),
+          method: "DELETE",
         },
       );
 
       if (!response.ok) {
-        throw new Error("Could not save dataset.");
+        throw new Error("Could not delete dataset.");
       }
 
-      await loadDatasets(activeProjectId);
-      setSuccessMessage("Dataset saved to project.");
-      setUploadPreview(null);
-      setSelectedCsvFile(null);
-      setTargetColumn("");
+      setDatasets((currentDatasets) =>
+        currentDatasets.filter(
+          (currentDataset) => currentDataset.id !== dataset.id,
+        ),
+      );
       setModelTrainingResult(null);
+      setSuccessMessage("Dataset deleted.");
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not save dataset.",
+        error instanceof Error ? error.message : "Could not delete dataset.",
       );
     } finally {
-      setIsSavingDataset(false);
+      setDeletingDatasetId(null);
     }
   }
 
   async function handleTrainModel() {
-    if (!uploadPreview || !targetColumn) {
+    if (!modelDataset || !targetColumn || !activeProjectId) {
       setErrorMessage("Choose a target column before training.");
+      return;
+    }
+
+    if (!modelDataset.datasetId) {
+      setErrorMessage("Refresh the Files tab before training this dataset.");
       return;
     }
 
@@ -352,7 +531,8 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          data: uploadPreview.data,
+          project_id: activeProjectId,
+          dataset_id: modelDataset.datasetId,
           target_column: targetColumn,
         }),
       });
@@ -364,8 +544,12 @@ export default function Home() {
         throw new Error(errorBody?.detail || "Could not train model.");
       }
 
-      setModelTrainingResult((await response.json()) as ModelTrainingResult);
-      setSuccessMessage("Baseline model trained.");
+      const result = (await response.json()) as ModelTrainingResult;
+      setModelTrainingResult(result);
+      setSuccessMessage(
+        `Model run #${result.model_run_id ?? ""} saved to workspace.`,
+      );
+      await loadModelRuns(activeProjectId);
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "Could not train model.",
@@ -386,14 +570,14 @@ export default function Home() {
     setIsSendingChatMessage(true);
 
     try {
-      const savedUserMessage = await saveProjectChatMessage(
-        activeProjectId,
-        "user",
-        trimmedMessage,
-      );
       setChatMessages((currentMessages) => [
         ...currentMessages,
-        savedUserMessage,
+        {
+          id: Date.now(),
+          role: "user",
+          created_at: new Date().toISOString(),
+          content: trimmedMessage,
+        },
       ]);
 
       const response = await fetch(`${API_BASE_URL}/chat`, {
@@ -403,6 +587,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: trimmedMessage,
+          project_id: activeProjectId,
           dataset_summary: datasetChatSummary,
           model_result: modelTrainingResult,
         }),
@@ -416,15 +601,17 @@ export default function Home() {
       const assistantReply =
         result.reply?.trim() ||
         "I did not receive a usable reply from the copilot.";
-      const savedAssistantMessage = await saveProjectChatMessage(
-        activeProjectId,
-        "assistant",
-        assistantReply,
-      );
       setChatMessages((currentMessages) => [
         ...currentMessages,
-        savedAssistantMessage,
+        {
+          id: Date.now() + 1,
+          role: "assistant",
+          created_at: new Date().toISOString(),
+          content: assistantReply,
+        },
       ]);
+      await loadChatHistory(activeProjectId);
+      await loadModelRuns(activeProjectId);
     } catch (error) {
       setChatMessages((currentMessages) => [
         ...currentMessages,
@@ -444,34 +631,47 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-950">
+    <main className="min-h-screen bg-[#090d12] text-zinc-100">
       <div className="flex min-h-screen flex-col lg:flex-row">
-        <aside className="border-b border-slate-200 bg-white lg:w-80 lg:border-b-0 lg:border-r">
-          <div className="border-b border-slate-200 px-6 py-5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">
-              Workspace
-            </p>
-            <h1 className="mt-2 text-2xl font-semibold">
-              AI Scientist Copilot
-            </h1>
+        {isWorkspacePanelOpen ? (
+        <aside className="border-b border-zinc-800 bg-[#0d1219] shadow-2xl shadow-black/30 lg:w-80 lg:border-b-0 lg:border-r">
+          <div className="border-b border-zinc-800 px-6 py-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium text-zinc-500">Workspace</p>
+                <h1 className="mt-2 text-2xl font-semibold">
+                  AI Scientist Copilot
+                </h1>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Collapse workspace panel"
+                title="Collapse workspace panel"
+                onClick={() => setIsWorkspacePanelOpen(false)}
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           <form
             onSubmit={handleCreateProject}
-            className="space-y-3 border-b border-slate-200 px-6 py-5"
+            className="space-y-3 border-b border-zinc-800 px-6 py-5"
           >
             <div>
               <label
                 htmlFor="project-name"
-                className="text-sm font-medium text-slate-700"
+                className="text-sm font-medium text-zinc-300"
               >
                 Project name
               </label>
-              <input
+              <Input
                 id="project-name"
                 value={projectName}
                 onChange={(event) => setProjectName(event.target.value)}
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
+                className="mt-1"
                 placeholder="Battery electrolyte study"
               />
             </div>
@@ -479,44 +679,44 @@ export default function Home() {
             <div>
               <label
                 htmlFor="project-description"
-                className="text-sm font-medium text-slate-700"
+                className="text-sm font-medium text-zinc-300"
               >
                 Description
               </label>
-              <textarea
+              <Textarea
                 id="project-description"
                 value={projectDescription}
                 onChange={(event) =>
                   setProjectDescription(event.target.value)
                 }
-                className="mt-1 min-h-20 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
+                className="mt-1 resize-none"
                 placeholder="Optional project context"
               />
             </div>
 
-            <button
+            <Button
               type="submit"
               disabled={isCreatingProject}
-              className="w-full rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+              className="w-full"
             >
               {isCreatingProject ? "Creating..." : "Create Project"}
-            </button>
+            </Button>
           </form>
 
           <section className="px-3 py-4">
             <div className="mb-2 flex items-center justify-between px-3">
-              <h2 className="text-sm font-semibold text-slate-800">
+              <h2 className="text-sm font-semibold text-zinc-300">
                 Projects
               </h2>
-              <span className="text-xs text-slate-500">{projects.length}</span>
+              <span className="text-xs text-zinc-500">{projects.length}</span>
             </div>
 
             {isLoadingProjects ? (
-              <p className="px-3 py-4 text-sm text-slate-500">
+              <p className="px-3 py-4 text-sm text-zinc-500">
                 Loading projects...
               </p>
             ) : projects.length === 0 ? (
-              <p className="px-3 py-4 text-sm leading-6 text-slate-500">
+              <p className="px-3 py-4 text-sm leading-6 text-zinc-500">
                 Create a project to start building a scientific workspace.
               </p>
             ) : (
@@ -524,162 +724,196 @@ export default function Home() {
                 {projects.map((project) => {
                   const isActive = project.id === activeProjectId;
                   return (
-                    <button
+                    <div
                       key={project.id}
-                      type="button"
-                      onClick={() => setActiveProjectId(project.id)}
-                      className={`w-full rounded-md px-3 py-3 text-left transition ${
-                        isActive
-                          ? "bg-cyan-50 text-cyan-950 ring-1 ring-cyan-200"
-                          : "text-slate-700 hover:bg-slate-100"
+                      className={`project-tab ${
+                        isActive ? "project-tab-active" : ""
                       }`}
                     >
-                      <span className="block truncate text-sm font-semibold">
-                        {project.name}
-                      </span>
-                      <span className="mt-1 block truncate text-xs text-slate-500">
-                        {project.description || "No description"}
-                      </span>
-                    </button>
+                      <div className="flex items-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setActiveProjectId(project.id)}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <span className="block truncate text-sm font-semibold">
+                            {project.name}
+                          </span>
+                          <span className="mt-1 block truncate text-xs text-zinc-500">
+                            {project.description || "No description"}
+                          </span>
+                        </button>
+                        <IconDeleteButton
+                          ariaLabel={`Delete project ${project.name}`}
+                          disabled={deletingProjectId === project.id}
+                          onClick={() => handleDeleteProject(project)}
+                        />
+                      </div>
+                    </div>
                   );
                 })}
               </div>
             )}
           </section>
         </aside>
+        ) : (
+          <aside className="border-b border-zinc-800 bg-[#0d1219] px-2 py-3 lg:border-b-0 lg:border-r">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Expand workspace panel"
+              title="Expand workspace panel"
+              onClick={() => setIsWorkspacePanelOpen(true)}
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </Button>
+          </aside>
+        )}
 
         <section className="flex-1 px-6 py-6 lg:px-10 lg:py-8">
           {errorMessage ? (
-            <div className="mb-5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="mb-5 rounded-md border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm text-red-200 shadow-lg shadow-black/20">
               {errorMessage}
             </div>
           ) : null}
 
           {successMessage ? (
-            <div className="mb-5 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            <div className="mb-5 rounded-md border border-emerald-500/30 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200 shadow-lg shadow-black/20">
               {successMessage}
             </div>
           ) : null}
 
           {activeProject ? (
             <div className="space-y-6">
-              <header className="border-b border-slate-200 pb-5">
-                <p className="text-sm font-medium text-slate-500">
-                  Active project
-                </p>
-                <h2 className="mt-2 text-3xl font-semibold tracking-tight">
-                  {activeProject.name}
-                </h2>
-                {activeProject.description ? (
-                  <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-                    {activeProject.description}
-                  </p>
-                ) : null}
-              </header>
-
-              <div className="grid gap-4 sm:grid-cols-3">
-                <Metric label="Datasets" value={datasets.length.toString()} />
-                <Metric
-                  label="Rows saved"
-                  value={datasets
-                    .reduce((total, dataset) => total + dataset.row_count, 0)
-                    .toLocaleString()}
-                />
-                <Metric
-                  label="Columns tracked"
-                  value={datasets
-                    .reduce(
-                      (total, dataset) => total + dataset.column_count,
-                      0,
-                    )
-                    .toLocaleString()}
-                />
-              </div>
-
-              <CsvUploadPanel
-                isSavingDataset={isSavingDataset}
-                isTrainingModel={isTrainingModel}
-                isUploadingCsv={isUploadingCsv}
-                modelTrainingResult={modelTrainingResult}
-                onFileChange={(file) => {
-                  setSelectedCsvFile(file);
-                  setUploadPreview(null);
-                  setTargetColumn("");
-                  setModelTrainingResult(null);
-                  setSuccessMessage(null);
-                }}
-                onSaveDataset={handleSaveDataset}
-                onTargetColumnChange={(columnName) => {
-                  setTargetColumn(columnName);
-                  setModelTrainingResult(null);
-                }}
-                onTrainModel={handleTrainModel}
-                onUploadPreview={handleUploadPreview}
-                selectedCsvFile={selectedCsvFile}
-                targetColumn={targetColumn}
-                uploadPreview={uploadPreview}
-              />
-
-              <section>
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">Saved datasets</h3>
-                  {isLoadingDatasets ? (
-                    <span className="text-sm text-slate-500">Loading...</span>
-                  ) : null}
-                </div>
-
-                {datasets.length === 0 && !isLoadingDatasets ? (
-                  <div className="rounded-md border border-dashed border-slate-300 bg-white px-5 py-10 text-center">
-                    <h4 className="text-base font-semibold text-slate-800">
-                      No datasets saved yet
-                    </h4>
-                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-                      Upload a CSV, inspect the preview, and save it into this
-                      project.
+              <Card>
+                <CardHeader className="flex flex-row items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-zinc-500">
+                      Active project
                     </p>
+                    <CardTitle className="mt-2 text-3xl">
+                      {activeProject.name}
+                    </CardTitle>
+                    {activeProject.description ? (
+                      <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-400">
+                        {activeProject.description}
+                      </p>
+                    ) : null}
                   </div>
-                ) : (
-                  <div className="overflow-hidden rounded-md border border-slate-200 bg-white">
-                    <div className="grid grid-cols-12 border-b border-slate-200 bg-slate-100 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <span className="col-span-6">Filename</span>
-                      <span className="col-span-2 text-right">Rows</span>
-                      <span className="col-span-2 text-right">Columns</span>
-                      <span className="col-span-2 text-right">Saved</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={
+                      isWorkbenchPanelOpen
+                        ? "Collapse workbench"
+                        : "Expand workbench"
+                    }
+                    title={
+                      isWorkbenchPanelOpen
+                        ? "Collapse workbench"
+                        : "Expand workbench"
+                    }
+                    onClick={() =>
+                      setIsWorkbenchPanelOpen((isOpen) => !isOpen)
+                    }
+                  >
+                    {isWorkbenchPanelOpen ? (
+                      <ChevronUp className="h-4 w-4" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4" />
+                    )}
+                  </Button>
+                </CardHeader>
+
+                {isWorkbenchPanelOpen ? (
+                  <div className="space-y-5 px-5 py-5">
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <Metric
+                        label="Files"
+                        value={datasets.length.toString()}
+                      />
+                      <Metric
+                        label="Rows"
+                        value={datasets
+                          .reduce(
+                            (total, dataset) => total + dataset.row_count,
+                            0,
+                          )
+                          .toLocaleString()}
+                      />
+                      <Metric
+                        label="Columns"
+                        value={datasets
+                          .reduce(
+                            (total, dataset) => total + dataset.column_count,
+                            0,
+                          )
+                          .toLocaleString()}
+                      />
                     </div>
 
-                    {datasets.map((dataset) => (
-                      <div
-                        key={dataset.id}
-                        className="grid grid-cols-12 items-center border-b border-slate-100 px-4 py-4 text-sm last:border-b-0"
-                      >
-                        <span className="col-span-6 truncate font-medium text-slate-900">
-                          {dataset.filename}
-                        </span>
-                        <span className="col-span-2 text-right text-slate-600">
-                          {dataset.row_count.toLocaleString()}
-                        </span>
-                        <span className="col-span-2 text-right text-slate-600">
-                          {dataset.column_count.toLocaleString()}
-                        </span>
-                        <span className="col-span-2 text-right text-slate-500">
-                          {formatDate(dataset.created_at)}
-                        </span>
-                      </div>
-                    ))}
+                    <WorkbenchTabs
+                      activeTab={activeWorkbenchTab}
+                      datasetCount={datasets.length}
+                      onTabChange={setActiveWorkbenchTab}
+                    />
+
+                    {activeWorkbenchTab === "upload" ? (
+                      <CsvUploadPanel
+                        isUploadingCsv={isUploadingCsv}
+                        onFileChange={(file) => {
+                          setSelectedCsvFile(file);
+                          setUploadPreview(null);
+                          setTargetColumn("");
+                          setModelTrainingResult(null);
+                          setSuccessMessage(null);
+                        }}
+                        onUploadPreview={handleUploadPreview}
+                        selectedCsvFile={selectedCsvFile}
+                        uploadPreview={uploadPreview}
+                      />
+                    ) : null}
+
+                    {activeWorkbenchTab === "files" ? (
+                      <DatasetFilesPanel
+                        datasets={datasets}
+                        deletingDatasetId={deletingDatasetId}
+                        isLoadingDatasets={isLoadingDatasets}
+                        onDeleteDataset={handleDeleteDataset}
+                      />
+                    ) : null}
+
+                    {activeWorkbenchTab === "model" ? (
+                      <ModelWorkbenchPanel
+                        isTrainingModel={isTrainingModel}
+                        isLoadingModelRuns={isLoadingModelRuns}
+                        modelDataset={modelDataset}
+                        modelRuns={modelRuns}
+                        modelTrainingResult={modelTrainingResult}
+                        onTargetColumnChange={(columnName) => {
+                          setTargetColumn(columnName);
+                          setModelTrainingResult(null);
+                        }}
+                        onTrainModel={handleTrainModel}
+                        targetColumn={targetColumn}
+                      />
+                    ) : null}
                   </div>
-                )}
-              </section>
+                ) : null}
+              </Card>
             </div>
           ) : (
             <div className="flex min-h-[60vh] items-center justify-center">
               <div className="max-w-lg text-center">
-                <p className="text-sm font-semibold uppercase tracking-wide text-cyan-700">
+                <p className="text-sm font-medium text-zinc-500">
                   AI Scientist Copilot
                 </p>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+                <h2 className="mt-3 text-3xl font-semibold">
                   Create or select a project
                 </h2>
-                <p className="mt-3 text-sm leading-6 text-slate-600">
+                <p className="mt-3 text-sm leading-6 text-zinc-400">
                   Projects organize datasets, analysis, models, and future
                   copilot memory for each scientific workspace.
                 </p>
@@ -688,16 +922,32 @@ export default function Home() {
           )}
         </section>
 
-        <CopilotChatPanel
-          activeProjectId={activeProjectId}
-          chatInput={chatInput}
-          datasetSummary={datasetChatSummary}
-          isSending={isSendingChatMessage}
-          messages={chatMessages}
-          modelResult={modelTrainingResult}
-          onInputChange={setChatInput}
-          onSend={handleSendChatMessage}
-        />
+        {isCopilotPanelOpen ? (
+          <CopilotChatPanel
+            activeProjectId={activeProjectId}
+            chatInput={chatInput}
+            datasetSummary={datasetChatSummary}
+            isSending={isSendingChatMessage}
+            messages={chatMessages}
+            modelResult={modelTrainingResult}
+            onCollapse={() => setIsCopilotPanelOpen(false)}
+            onInputChange={setChatInput}
+            onSend={handleSendChatMessage}
+          />
+        ) : (
+          <aside className="border-t border-zinc-800 bg-[#0d1219] px-2 py-3 lg:border-l lg:border-t-0">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Expand copilot panel"
+              title="Expand copilot panel"
+              onClick={() => setIsCopilotPanelOpen(true)}
+            >
+              <PanelRightOpen className="h-4 w-4" />
+            </Button>
+          </aside>
+        )}
       </div>
     </main>
   );
@@ -710,6 +960,7 @@ function CopilotChatPanel({
   isSending,
   messages,
   modelResult,
+  onCollapse,
   onInputChange,
   onSend,
 }: {
@@ -719,23 +970,32 @@ function CopilotChatPanel({
   isSending: boolean;
   messages: ChatMessage[];
   modelResult: ModelTrainingResult | null;
+  onCollapse: () => void;
   onInputChange: (value: string) => void;
   onSend: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages, isSending]);
+
   return (
-    <aside className="border-t border-slate-200 bg-white lg:flex lg:w-96 lg:flex-col lg:border-l lg:border-t-0">
-      <div className="border-b border-slate-200 px-5 py-4">
+    <aside className="border-t border-zinc-800 bg-[#0d1219] shadow-2xl shadow-black/30 lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-96 lg:flex-col lg:border-l lg:border-t-0">
+      <div className="shrink-0 border-b border-zinc-800 px-5 py-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">
+            <p className="text-xs font-medium text-zinc-500">
               Copilot
             </p>
-            <h2 className="mt-1 text-lg font-semibold">Scientist chat</h2>
+            <h2 className="mt-1 text-lg font-semibold">
+              Scientist chat
+            </h2>
           </div>
           <div className="flex gap-1.5 pt-1">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                datasetSummary ? "bg-emerald-500" : "bg-slate-300"
+                datasetSummary ? "bg-emerald-400" : "bg-zinc-700"
               }`}
               title={
                 datasetSummary
@@ -745,7 +1005,7 @@ function CopilotChatPanel({
             />
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                modelResult ? "bg-cyan-600" : "bg-slate-300"
+                modelResult ? "bg-cyan-400" : "bg-zinc-700"
               }`}
               title={
                 modelResult
@@ -753,13 +1013,24 @@ function CopilotChatPanel({
                   : "No model result available"
               }
             />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Collapse copilot panel"
+              title="Collapse copilot panel"
+              onClick={onCollapse}
+              className="-mt-2 ml-1"
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </div>
 
-      <div className="flex max-h-[28rem] flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 lg:max-h-none">
+      <div className="flex max-h-[28rem] flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 lg:min-h-0 lg:max-h-none">
         {messages.length === 0 ? (
-          <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm leading-6 text-slate-600">
+          <div className="rounded-md border border-dashed border-zinc-700 bg-[#0f151d] px-4 py-5 text-sm leading-6 text-zinc-400 shadow-lg shadow-black/20">
             Ask about the uploaded dataset, model metrics, feature importance,
             or next experiment ideas. Current context is included when
             available.
@@ -773,10 +1044,10 @@ function CopilotChatPanel({
               }`}
             >
               <div
-                className={`max-w-[85%] rounded-md px-3 py-2 text-sm leading-6 ${
+                className={`max-w-[85%] rounded-md px-3 py-2 text-sm leading-6 shadow-sm ${
                   message.role === "user"
-                    ? "bg-slate-950 text-white"
-                    : "border border-slate-200 bg-slate-50 text-slate-700"
+                    ? "bg-[#1f6feb] text-white"
+                    : "border border-zinc-800 bg-[#131b26] text-zinc-200"
                 }`}
               >
                 <p className="whitespace-pre-wrap break-words">
@@ -789,160 +1060,106 @@ function CopilotChatPanel({
 
         {isSending ? (
           <div className="flex justify-start">
-            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            <div className="rounded-md border border-zinc-800 bg-[#131b26] px-3 py-2 text-sm text-zinc-500 shadow-sm">
               Thinking...
             </div>
           </div>
         ) : null}
+        <div ref={messagesEndRef} />
       </div>
 
-      <form onSubmit={onSend} className="border-t border-slate-200 p-4">
+      <form
+        onSubmit={onSend}
+        className="shrink-0 border-t border-zinc-800 bg-[#0b1017] p-4"
+      >
         <label htmlFor="copilot-message" className="sr-only">
           Copilot message
         </label>
-        <textarea
+        <Textarea
           id="copilot-message"
           value={chatInput}
           onChange={(event) => onInputChange(event.target.value)}
-          className="min-h-24 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          className="min-h-24 resize-none"
           placeholder="Ask the copilot about this workspace..."
         />
-        <button
+        <Button
           type="submit"
           disabled={!activeProjectId || !chatInput.trim() || isSending}
-          className="mt-3 w-full rounded-md bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-cyan-300"
+          className="mt-3 w-full"
         >
           {isSending ? "Sending..." : "Send"}
-        </button>
+        </Button>
       </form>
     </aside>
   );
 }
 
 function CsvUploadPanel({
-  isSavingDataset,
-  isTrainingModel,
   isUploadingCsv,
-  modelTrainingResult,
   onFileChange,
-  onSaveDataset,
-  onTargetColumnChange,
-  onTrainModel,
   onUploadPreview,
   selectedCsvFile,
-  targetColumn,
   uploadPreview,
 }: {
-  isSavingDataset: boolean;
-  isTrainingModel: boolean;
   isUploadingCsv: boolean;
-  modelTrainingResult: ModelTrainingResult | null;
   onFileChange: (file: File | null) => void;
-  onSaveDataset: () => void;
-  onTargetColumnChange: (columnName: string) => void;
-  onTrainModel: () => void;
   onUploadPreview: (event: FormEvent<HTMLFormElement>) => void;
   selectedCsvFile: File | null;
-  targetColumn: string;
   uploadPreview: DatasetUploadPreview | null;
 }) {
   return (
-    <section className="rounded-md border border-slate-200 bg-white">
-      <div className="border-b border-slate-200 px-5 py-4">
-        <h3 className="text-lg font-semibold">CSV upload</h3>
-      </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>CSV upload</CardTitle>
+      </CardHeader>
 
       <form
         onSubmit={onUploadPreview}
         className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"
       >
-        <input
+        <Input
           type="file"
           accept=".csv,text/csv"
           onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+          className="text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-200 hover:file:bg-zinc-700"
         />
-        <button
+        <Button
           type="submit"
           disabled={!selectedCsvFile || isUploadingCsv}
-          className="rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+          variant="secondary"
         >
-          {isUploadingCsv ? "Previewing..." : "Upload Preview"}
-        </button>
+          {isUploadingCsv ? "Uploading..." : "Upload CSV"}
+        </Button>
       </form>
 
       {uploadPreview ? (
-        <div className="border-t border-slate-200 px-5 py-5">
+        <div className="border-t border-zinc-800 px-5 py-5">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h4 className="text-base font-semibold">
                 {uploadPreview.filename}
               </h4>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="mt-1 text-sm text-zinc-500">
                 {uploadPreview.rows.toLocaleString()} rows,{" "}
                 {uploadPreview.columns.toLocaleString()} columns
               </p>
             </div>
-            <button
-              type="button"
-              onClick={onSaveDataset}
-              disabled={isSavingDataset}
-              className="rounded-md bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-cyan-300"
-            >
-              {isSavingDataset ? "Saving..." : "Save Dataset to Project"}
-            </button>
+            <Badge>Saved to project</Badge>
           </div>
 
           <div className="mb-4 flex flex-wrap gap-2">
             {uploadPreview.column_names.map((columnName) => (
-              <span
-                key={columnName}
-                className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700"
-              >
+              <Badge key={columnName}>
                 {columnName}
-              </span>
+              </Badge>
             ))}
           </div>
-
-          <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-4 py-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="flex-1">
-                <label
-                  htmlFor="target-column"
-                  className="text-sm font-medium text-slate-700"
-                >
-                  Target column
-                </label>
-                <select
-                  id="target-column"
-                  value={targetColumn}
-                  onChange={(event) =>
-                    onTargetColumnChange(event.target.value)
-                  }
-                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-cyan-600 focus:ring-2 focus:ring-cyan-100"
-                >
-                  {uploadPreview.column_names.map((columnName) => (
-                    <option key={columnName} value={columnName}>
-                      {columnName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <button
-                type="button"
-                onClick={onTrainModel}
-                disabled={!targetColumn || isTrainingModel}
-                className="rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-              >
-                {isTrainingModel ? "Training..." : "Train Model"}
-              </button>
-            </div>
-          </div>
-
-          {modelTrainingResult ? (
-            <ModelTrainingResults result={modelTrainingResult} />
-          ) : null}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <ProfileTable
@@ -956,7 +1173,264 @@ function CsvUploadPanel({
           </div>
         </div>
       ) : null}
-    </section>
+    </Card>
+  );
+}
+
+function WorkbenchTabs({
+  activeTab,
+  datasetCount,
+  onTabChange,
+}: {
+  activeTab: WorkbenchTab;
+  datasetCount: number;
+  onTabChange: (tab: WorkbenchTab) => void;
+}) {
+  const tabs: Array<{
+    id: WorkbenchTab;
+    label: string;
+    icon: typeof Upload;
+    count?: number;
+  }> = [
+    { id: "upload", label: "Upload", icon: Upload },
+    { id: "files", label: "Files", icon: Files, count: datasetCount },
+    { id: "model", label: "Model", icon: BarChart3 },
+  ];
+
+  return (
+    <div className="flex flex-wrap gap-2 border-b border-zinc-800 pb-3">
+      {tabs.map((tab) => {
+        const Icon = tab.icon;
+        const isActive = activeTab === tab.id;
+        return (
+          <Button
+            key={tab.id}
+            type="button"
+            variant={isActive ? "default" : "ghost"}
+            size="sm"
+            onClick={() => onTabChange(tab.id)}
+            className="gap-2"
+          >
+            <Icon className="h-4 w-4" />
+            {tab.label}
+            {typeof tab.count === "number" ? (
+              <span className="rounded bg-black/15 px-1.5 text-xs">
+                {tab.count}
+              </span>
+            ) : null}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DatasetFilesPanel({
+  datasets,
+  deletingDatasetId,
+  isLoadingDatasets,
+  onDeleteDataset,
+}: {
+  datasets: Dataset[];
+  deletingDatasetId: number | null;
+  isLoadingDatasets: boolean;
+  onDeleteDataset: (dataset: Dataset) => void;
+}) {
+  if (datasets.length === 0 && !isLoadingDatasets) {
+    return (
+      <Card className="border-dashed px-5 py-10 text-center">
+        <h4 className="text-base font-semibold text-zinc-100">
+          No files uploaded yet
+        </h4>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
+          Upload a CSV from the Upload tab. It will appear here automatically.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="grid grid-cols-12 border-b border-zinc-800 bg-[#131b26] px-4 py-3 text-xs font-medium text-zinc-500">
+        <span className="col-span-4">Filename</span>
+        <span className="col-span-2 text-right">Rows</span>
+        <span className="col-span-2 text-right">Columns</span>
+        <span className="col-span-2 text-right">Uploaded</span>
+        <span className="col-span-2 text-right">Action</span>
+      </div>
+
+      {isLoadingDatasets ? (
+        <div className="px-4 py-4 text-sm text-zinc-500">Loading files...</div>
+      ) : (
+        datasets.map((dataset) => (
+          <div
+            key={dataset.id}
+            className="grid grid-cols-12 items-center border-b border-zinc-800/80 px-4 py-4 text-sm transition hover:bg-[#151f2b] last:border-b-0"
+          >
+            <span className="col-span-4 truncate font-medium text-zinc-100">
+              {dataset.filename}
+            </span>
+            <span className="col-span-2 text-right text-zinc-400">
+              {dataset.row_count.toLocaleString()}
+            </span>
+            <span className="col-span-2 text-right text-zinc-400">
+              {dataset.column_count.toLocaleString()}
+            </span>
+            <span className="col-span-2 text-right text-zinc-500">
+              {formatDate(dataset.created_at)}
+            </span>
+            <span className="col-span-2 text-right">
+              <IconDeleteButton
+                ariaLabel={`Delete dataset ${dataset.filename}`}
+                disabled={deletingDatasetId === dataset.id}
+                onClick={() => onDeleteDataset(dataset)}
+              />
+            </span>
+          </div>
+        ))
+      )}
+    </Card>
+  );
+}
+
+function ModelWorkbenchPanel({
+  isTrainingModel,
+  isLoadingModelRuns,
+  modelDataset,
+  modelRuns,
+  modelTrainingResult,
+  onTargetColumnChange,
+  onTrainModel,
+  targetColumn,
+}: {
+  isTrainingModel: boolean;
+  isLoadingModelRuns: boolean;
+  modelDataset: {
+    datasetId: number | null;
+    filename: string;
+    rows: number;
+    columns: number;
+    columnNames: string[];
+    data: Record<string, unknown>[];
+  } | null;
+  modelRuns: ModelRun[];
+  modelTrainingResult: ModelTrainingResult | null;
+  onTargetColumnChange: (columnName: string) => void;
+  onTrainModel: () => void;
+  targetColumn: string;
+}) {
+  if (!modelDataset) {
+    return (
+      <Card className="border-dashed px-5 py-10 text-center">
+        <h4 className="text-base font-semibold text-zinc-100">
+          No project files available
+        </h4>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
+          Upload a CSV in the Upload tab. Saved files become available for
+          modeling automatically.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Baseline model</CardTitle>
+      </CardHeader>
+      <div className="space-y-4 px-5 py-5">
+        <div>
+          <h4 className="text-base font-semibold">{modelDataset.filename}</h4>
+          <p className="mt-1 text-sm text-zinc-500">
+            {modelDataset.rows.toLocaleString()} rows,{" "}
+            {modelDataset.columns.toLocaleString()} columns
+          </p>
+        </div>
+        <div className="rounded-md border border-zinc-800 bg-[#0b1017] px-4 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label
+                htmlFor="target-column"
+                className="text-sm font-medium text-zinc-300"
+              >
+                Target column
+              </label>
+              <select
+                id="target-column"
+                value={targetColumn}
+                onChange={(event) => onTargetColumnChange(event.target.value)}
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {modelDataset.columnNames.map((columnName) => (
+                  <option key={columnName} value={columnName}>
+                    {columnName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <Button
+              type="button"
+              onClick={onTrainModel}
+              disabled={!targetColumn || isTrainingModel}
+              variant="secondary"
+            >
+              {isTrainingModel ? "Training..." : "Train Model"}
+            </Button>
+          </div>
+        </div>
+
+        {modelTrainingResult ? (
+          <ModelTrainingResults result={modelTrainingResult} />
+        ) : null}
+
+        <ModelRunsList
+          isLoading={isLoadingModelRuns}
+          modelRuns={modelRuns}
+        />
+      </div>
+    </Card>
+  );
+}
+
+function ModelRunsList({
+  isLoading,
+  modelRuns,
+}: {
+  isLoading: boolean;
+  modelRuns: ModelRun[];
+}) {
+  return (
+    <Card className="overflow-hidden">
+      <div className="surface-header">Model runs</div>
+      {isLoading ? (
+        <p className="px-4 py-4 text-sm text-zinc-500">Loading model runs...</p>
+      ) : modelRuns.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-zinc-500">
+          No model runs saved yet.
+        </p>
+      ) : (
+        modelRuns.map((modelRun) => (
+          <div
+            key={modelRun.id}
+            className="grid grid-cols-12 items-center border-t border-zinc-800 px-4 py-3 text-sm"
+          >
+            <span className="col-span-2 font-medium text-zinc-100">
+              #{modelRun.id}
+            </span>
+            <span className="col-span-3 truncate text-zinc-300">
+              {modelRun.model_type}
+            </span>
+            <span className="col-span-3 text-zinc-400">
+              {modelRun.task_type}
+            </span>
+            <span className="col-span-4 truncate text-right text-zinc-400">
+              target: {modelRun.target_column}
+            </span>
+          </div>
+        ))
+      )}
+    </Card>
   );
 }
 
@@ -965,36 +1439,36 @@ function ModelTrainingResults({ result }: { result: ModelTrainingResult }) {
 
   return (
     <div className="mb-4 grid gap-4 lg:grid-cols-2">
-      <div className="rounded-md border border-slate-200 bg-white px-4 py-4">
-        <h4 className="text-sm font-semibold text-slate-900">
+      <div className="rounded-md border border-zinc-800 bg-[#131b26] px-4 py-4 shadow-lg shadow-black/20">
+        <h4 className="text-sm font-semibold text-zinc-100">
           Model summary
         </h4>
         <dl className="mt-4 grid gap-3 text-sm">
           <div className="flex items-center justify-between gap-4">
-            <dt className="text-slate-500">Problem type</dt>
-            <dd className="font-medium capitalize text-slate-900">
+            <dt className="text-zinc-500">Problem type</dt>
+            <dd className="font-medium capitalize text-zinc-100">
               {result.problem_type}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-4">
-            <dt className="text-slate-500">Model type</dt>
-            <dd className="font-medium text-slate-900">
+            <dt className="text-zinc-500">Model type</dt>
+            <dd className="font-medium text-zinc-100">
               {result.model_type}
             </dd>
           </div>
         </dl>
       </div>
 
-      <div className="rounded-md border border-slate-200 bg-white px-4 py-4">
-        <h4 className="text-sm font-semibold text-slate-900">Metrics</h4>
+      <div className="rounded-md border border-zinc-800 bg-[#131b26] px-4 py-4 shadow-lg shadow-black/20">
+        <h4 className="text-sm font-semibold text-zinc-100">Metrics</h4>
         <dl className="mt-4 grid gap-3 text-sm">
           {Object.entries(result.metrics).map(([metricName, metricValue]) => (
             <div
               key={metricName}
               className="flex items-center justify-between gap-4"
             >
-              <dt className="text-slate-500">{formatMetricName(metricName)}</dt>
-              <dd className="font-medium tabular-nums text-slate-900">
+              <dt className="text-zinc-500">{formatMetricName(metricName)}</dt>
+              <dd className="font-medium tabular-nums text-zinc-100">
                 {formatMetricValue(metricValue)}
               </dd>
             </div>
@@ -1002,18 +1476,18 @@ function ModelTrainingResults({ result }: { result: ModelTrainingResult }) {
         </dl>
       </div>
 
-      <div className="overflow-hidden rounded-md border border-slate-200 bg-white lg:col-span-2">
-        <div className="border-b border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold">
+      <div className="surface overflow-hidden lg:col-span-2">
+        <div className="surface-header">
           Top feature importance
         </div>
         {topFeatureImportance.length === 0 ? (
-          <p className="px-4 py-4 text-sm text-slate-500">
+          <p className="px-4 py-4 text-sm text-zinc-500">
             No feature importance values returned.
           </p>
         ) : (
           <div className="max-h-80 overflow-auto">
             <table className="w-full min-w-[32rem] text-left text-sm">
-              <thead className="bg-white text-xs uppercase tracking-wide text-slate-500">
+              <thead className="bg-[#131b26] text-xs font-medium text-zinc-500">
                 <tr>
                   <th className="px-4 py-3">Feature</th>
                   <th className="px-4 py-3 text-right">Importance</th>
@@ -1021,11 +1495,11 @@ function ModelTrainingResults({ result }: { result: ModelTrainingResult }) {
               </thead>
               <tbody>
                 {topFeatureImportance.map((item) => (
-                  <tr key={item.feature} className="border-t border-slate-100">
-                    <td className="max-w-96 truncate px-4 py-3 font-medium text-slate-900">
+                  <tr key={item.feature} className="border-t border-zinc-800">
+                    <td className="max-w-96 truncate px-4 py-3 font-medium text-zinc-100">
                       {item.feature}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                    <td className="px-4 py-3 text-right tabular-nums text-zinc-400">
                       {formatMetricValue(item.importance)}
                     </td>
                   </tr>
@@ -1047,13 +1521,13 @@ function ProfileTable({
   missingValues: Record<string, number>;
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold">
+    <div className="surface overflow-hidden">
+      <div className="surface-header">
         Profile
       </div>
       <div className="max-h-80 overflow-auto">
         <table className="w-full min-w-96 text-left text-sm">
-          <thead className="bg-white text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-[#131b26] text-xs font-medium text-zinc-500">
             <tr>
               <th className="px-4 py-3">Column</th>
               <th className="px-4 py-3">Type</th>
@@ -1062,12 +1536,12 @@ function ProfileTable({
           </thead>
           <tbody>
             {Object.entries(columnTypes).map(([columnName, columnType]) => (
-              <tr key={columnName} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-medium text-slate-900">
+              <tr key={columnName} className="border-t border-zinc-800">
+                <td className="px-4 py-3 font-medium text-zinc-100">
                   {columnName}
                 </td>
-                <td className="px-4 py-3 text-slate-600">{columnType}</td>
-                <td className="px-4 py-3 text-right text-slate-600">
+                <td className="px-4 py-3 text-zinc-400">{columnType}</td>
+                <td className="px-4 py-3 text-right text-zinc-400">
                   {(missingValues[columnName] ?? 0).toLocaleString()}
                 </td>
               </tr>
@@ -1087,13 +1561,13 @@ function PreviewTable({
   rows: Record<string, unknown>[];
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-100 px-4 py-3 text-sm font-semibold">
+    <div className="surface overflow-hidden">
+      <div className="surface-header">
         Preview
       </div>
       <div className="max-h-80 overflow-auto">
         <table className="w-full min-w-[36rem] text-left text-sm">
-          <thead className="bg-white text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-[#131b26] text-xs font-medium text-zinc-500">
             <tr>
               {columnNames.map((columnName) => (
                 <th key={columnName} className="px-4 py-3">
@@ -1104,11 +1578,11 @@ function PreviewTable({
           </thead>
           <tbody>
             {rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="border-t border-slate-100">
+              <tr key={rowIndex} className="border-t border-zinc-800">
                 {columnNames.map((columnName) => (
                   <td
                     key={columnName}
-                    className="max-w-44 truncate px-4 py-3 text-slate-700"
+                    className="max-w-44 truncate px-4 py-3 text-zinc-300"
                   >
                     {formatCellValue(row[columnName])}
                   </td>
@@ -1124,31 +1598,34 @@ function PreviewTable({
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white px-4 py-4">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-slate-950">{value}</p>
-    </div>
+    <Card className="px-4 py-4">
+      <p className="text-sm text-zinc-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-zinc-100">{value}</p>
+    </Card>
   );
 }
 
-async function saveProjectChatMessage(
-  projectId: number,
-  role: ChatMessage["role"],
-  content: string,
-) {
-  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ role, content }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Could not save chat message.");
-  }
-
-  return (await response.json()) as ChatMessage;
+function IconDeleteButton({
+  ariaLabel,
+  disabled,
+  onClick,
+}: {
+  ariaLabel: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      onClick={onClick}
+      disabled={disabled}
+      variant="destructive"
+      size="icon"
+    >
+      <X className="h-4 w-4" />
+    </Button>
+  );
 }
 
 function formatCellValue(value: unknown) {

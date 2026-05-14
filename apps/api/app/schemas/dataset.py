@@ -34,3 +34,8 @@ class DatasetUploadPreview(BaseModel):
     preview: list[dict[str, Any]]
     data: list[dict[str, Any]]
     profile: DatasetProfile
+
+
+class DatasetUploadResult(BaseModel):
+    dataset: DatasetRead
+    preview: DatasetUploadPreview

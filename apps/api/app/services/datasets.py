@@ -40,6 +40,11 @@ def get_dataset(db: Session, dataset_id: int) -> Dataset | None:
     return db.get(Dataset, dataset_id)
 
 
+def delete_dataset(db: Session, dataset: Dataset) -> None:
+    db.delete(dataset)
+    db.commit()
+
+
 def build_upload_preview(filename: str, dataframe: pd.DataFrame) -> DatasetUploadPreview:
     dataframe = dataframe.copy()
     dataframe.columns = [str(column) for column in dataframe.columns]

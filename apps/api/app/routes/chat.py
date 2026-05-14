@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.agent.agent_service import AgentService
 from app.db.session import get_db
 from app.schemas.chat import (
     ChatMessageCreate,
@@ -12,16 +13,21 @@ from app.services.chat_messages import (
     create_chat_message,
     list_project_chat_messages,
 )
-from app.services.llm_chat import generate_chat_reply
 from app.services.projects import get_project
 
 
 router = APIRouter(tags=["chat"])
+agent_service = AgentService()
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat_route(chat_request: ChatRequest) -> ChatResponse:
-    return generate_chat_reply(
+def chat_route(
+    chat_request: ChatRequest,
+    db: Session = Depends(get_db),
+) -> ChatResponse:
+    return agent_service.handle_message(
+        db=db,
+        project_id=chat_request.project_id,
         message=chat_request.message,
         dataset_summary=chat_request.dataset_summary,
         model_result=chat_request.model_result,
