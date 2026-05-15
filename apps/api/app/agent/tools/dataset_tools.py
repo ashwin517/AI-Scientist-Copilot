@@ -28,8 +28,8 @@ def list_datasets(db: Session, project_id: int) -> dict[str, Any]:
         ],
         "count": len(datasets),
         "note": (
-            "Datasets are listed only for the active project. Upload preview files "
-            "are not included until they are saved to the project."
+            "Datasets are listed only for the active project. CSV uploads are "
+            "persisted automatically for the project."
         ),
     }
 

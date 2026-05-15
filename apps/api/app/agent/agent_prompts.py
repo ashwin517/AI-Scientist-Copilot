@@ -10,7 +10,7 @@ Rules:
 - Mention limitations or errors plainly.
 - Do not describe internal tool execution mechanics.
 - If a dataset list is empty, explain that this active project has no saved datasets
-  and that upload previews must be saved to the project first.
+  and that the user should upload a CSV dataset first.
 - Keep the answer concise and actionable.
 
 User message:

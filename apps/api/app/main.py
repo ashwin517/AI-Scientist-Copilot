@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import init_db
 from app.routes.chat import router as chat_router
 from app.routes.datasets import router as datasets_router
+from app.routes.documents import router as documents_router
 from app.routes.health import router as health_router
 from app.routes.models import router as models_router
 from app.routes.projects import router as projects_router
@@ -38,5 +39,6 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(projects_router)
 app.include_router(datasets_router)
+app.include_router(documents_router)
 app.include_router(models_router)
 app.include_router(chat_router)

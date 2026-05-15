@@ -13,6 +13,15 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    message: str | None = None
+    tool_used: bool = False
+    tool_name: str | None = None
+    tool_result: dict[str, Any] | None = None
+    pending_action: dict[str, Any] | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.message is None:
+            self.message = self.reply
 
 
 class ChatMessageCreate(BaseModel):

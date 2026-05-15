@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  DragEvent,
   FormEvent,
   useCallback,
   useEffect,
@@ -65,6 +66,21 @@ type DatasetUploadResult = {
   preview: DatasetUploadPreview;
 };
 
+type Document = {
+  id: number;
+  project_id: number;
+  filename: string;
+  file_path: string;
+  mime_type: string;
+  file_size: number;
+  extracted_text_path: string | null;
+  created_at: string;
+};
+
+type DocumentUploadResult = {
+  document: Document;
+};
+
 type FeatureImportance = {
   feature: string;
   importance: number;
@@ -99,6 +115,57 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  tool_used?: boolean;
+  tool_name?: string | null;
+  tool_result?: AgentToolResult | null;
+  pending_action?: AgentPendingAction | null;
+};
+
+type AgentPendingAction = {
+  tool_name: string;
+  arguments?: Record<string, unknown>;
+  missing_fields?: string[];
+};
+
+type AgentToolResult = {
+  tool_name: string;
+  success?: boolean;
+  answer?: string;
+  sources?: AgentToolSource[];
+  dataset_id?: number | null;
+  filename?: string | null;
+  rows?: number | null;
+  column_count?: number | null;
+  columns?: string[];
+  numeric_columns?: string[];
+  categorical_columns?: string[];
+  missing_values?: Record<string, number>;
+  columns_with_missing?: Record<string, number>;
+  total_missing_values?: number;
+  model_run_id?: number | null;
+  target_column?: string | null;
+  task_type?: string | null;
+  metrics?: Record<string, number>;
+  top_features?: FeatureImportance[];
+  error?: string | null;
+};
+
+type AgentToolSource = {
+  document_id: number;
+  filename: string;
+  chunk_id: number;
+  chunk_index: number;
+  score: number;
+  content_preview: string;
+};
+
+type ChatResponse = {
+  reply?: string;
+  message?: string;
+  tool_used?: boolean;
+  tool_name?: string | null;
+  tool_result?: AgentToolResult | null;
+  pending_action?: AgentPendingAction | null;
 };
 
 type DatasetChatSummary = {
@@ -116,11 +183,15 @@ export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [documents, setDocuments] = useState<Document[]>([]);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
-  const [selectedCsvFile, setSelectedCsvFile] = useState<File | null>(null);
+  const [selectedUploadFiles, setSelectedUploadFiles] = useState<File[]>([]);
   const [uploadPreview, setUploadPreview] =
     useState<DatasetUploadPreview | null>(null);
+  const [selectedModelDatasetId, setSelectedModelDatasetId] = useState<
+    number | null
+  >(null);
   const [targetColumn, setTargetColumn] = useState("");
   const [modelTrainingResult, setModelTrainingResult] =
     useState<ModelTrainingResult | null>(null);
@@ -136,6 +207,8 @@ export default function Home() {
   const [isLoadingDatasets, setIsLoadingDatasets] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isUploadingCsv, setIsUploadingCsv] = useState(false);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
   const [isTrainingModel, setIsTrainingModel] = useState(false);
   const [isLoadingModelRuns, setIsLoadingModelRuns] = useState(false);
   const [isSendingChatMessage, setIsSendingChatMessage] = useState(false);
@@ -143,6 +216,9 @@ export default function Home() {
     null,
   );
   const [deletingDatasetId, setDeletingDatasetId] = useState<number | null>(
+    null,
+  );
+  const [deletingDocumentId, setDeletingDocumentId] = useState<number | null>(
     null,
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -154,17 +230,20 @@ export default function Home() {
   );
 
   const latestDataset = datasets[0] ?? null;
+  const selectedModelDataset =
+    datasets.find((dataset) => dataset.id === selectedModelDatasetId) ??
+    latestDataset;
 
   const modelDataset = useMemo(() => {
-    if (latestDataset) {
-      const firstRow = latestDataset.data[0] ?? {};
+    if (selectedModelDataset) {
+      const firstRow = selectedModelDataset.data[0] ?? {};
       return {
-        datasetId: latestDataset.id,
-        filename: latestDataset.filename,
-        rows: latestDataset.row_count,
-        columns: latestDataset.column_count,
+        datasetId: selectedModelDataset.id,
+        filename: selectedModelDataset.filename,
+        rows: selectedModelDataset.row_count,
+        columns: selectedModelDataset.column_count,
         columnNames: Object.keys(firstRow),
-        data: latestDataset.data,
+        data: selectedModelDataset.data,
       };
     }
 
@@ -180,7 +259,7 @@ export default function Home() {
       columnNames: uploadPreview.column_names,
       data: uploadPreview.data,
     };
-  }, [latestDataset, uploadPreview]);
+  }, [selectedModelDataset, uploadPreview]);
 
   const datasetChatSummary = useMemo<DatasetChatSummary | null>(() => {
     if (!uploadPreview) {
@@ -196,6 +275,18 @@ export default function Home() {
       profile: uploadPreview.profile,
     };
   }, [uploadPreview]);
+
+  useEffect(() => {
+    setSelectedModelDatasetId((currentDatasetId) => {
+      if (
+        currentDatasetId &&
+        datasets.some((dataset) => dataset.id === currentDatasetId)
+      ) {
+        return currentDatasetId;
+      }
+      return datasets[0]?.id ?? null;
+    });
+  }, [datasets]);
 
   useEffect(() => {
     if (!modelDataset) {
@@ -234,6 +325,29 @@ export default function Home() {
       );
     } finally {
       setIsLoadingDatasets(false);
+    }
+  }, []);
+
+  const loadDocuments = useCallback(async (projectId: number) => {
+    try {
+      setIsLoadingDocuments(true);
+      setErrorMessage(null);
+
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${projectId}/documents`,
+      );
+      if (!response.ok) {
+        throw new Error("Could not load documents.");
+      }
+
+      setDocuments((await response.json()) as Document[]);
+    } catch (error) {
+      setDocuments([]);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not load documents.",
+      );
+    } finally {
+      setIsLoadingDocuments(false);
     }
   }, []);
 
@@ -310,7 +424,8 @@ export default function Home() {
 
   useEffect(() => {
     setUploadPreview(null);
-    setSelectedCsvFile(null);
+    setSelectedUploadFiles([]);
+    setSelectedModelDatasetId(null);
     setTargetColumn("");
     setModelTrainingResult(null);
     setModelRuns([]);
@@ -320,13 +435,21 @@ export default function Home() {
 
     if (activeProjectId === null) {
       setDatasets([]);
+      setDocuments([]);
       return;
     }
 
     loadDatasets(activeProjectId);
+    loadDocuments(activeProjectId);
     loadChatHistory(activeProjectId);
     loadModelRuns(activeProjectId);
-  }, [activeProjectId, loadChatHistory, loadDatasets, loadModelRuns]);
+  }, [
+    activeProjectId,
+    loadChatHistory,
+    loadDatasets,
+    loadDocuments,
+    loadModelRuns,
+  ]);
 
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -410,59 +533,147 @@ export default function Home() {
     }
   }
 
-  async function handleUploadPreview(event: FormEvent<HTMLFormElement>) {
+  async function handleUploadFiles(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!activeProjectId) {
-      setErrorMessage("Create or select a project before uploading a dataset.");
+      setErrorMessage("Create or select a project before uploading files.");
       return;
     }
 
-    if (!selectedCsvFile) {
-      setErrorMessage("Choose a CSV file first.");
+    if (selectedUploadFiles.length === 0) {
+      setErrorMessage("Choose one or more files first.");
       return;
     }
-
-    const formData = new FormData();
-    formData.append("file", selectedCsvFile);
 
     try {
       setIsUploadingCsv(true);
+      setIsUploadingDocument(true);
       setErrorMessage(null);
       setSuccessMessage(null);
 
-      const response = await fetch(
-        `${API_BASE_URL}/projects/${activeProjectId}/datasets/upload`,
-        {
-          method: "POST",
-          body: formData,
-        },
-      );
+      let uploadedDatasetCount = 0;
+      const uploadedDocuments: Document[] = [];
+      let latestCsvPreview: DatasetUploadPreview | null = null;
 
-      if (!response.ok) {
-        const errorBody = (await response.json().catch(() => null)) as {
-          detail?: string;
-        } | null;
-        throw new Error(errorBody?.detail || "Could not upload CSV.");
+      for (const file of selectedUploadFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        if (isCsvFile(file)) {
+          const response = await fetch(
+            `${API_BASE_URL}/projects/${activeProjectId}/datasets/upload`,
+            {
+              method: "POST",
+              body: formData,
+            },
+          );
+
+          if (!response.ok) {
+            const errorBody = (await response.json().catch(() => null)) as {
+              detail?: string;
+            } | null;
+            throw new Error(errorBody?.detail || `Could not upload ${file.name}.`);
+          }
+
+          const result = (await response.json()) as DatasetUploadResult;
+          latestCsvPreview = result.preview;
+          uploadedDatasetCount += 1;
+          continue;
+        }
+
+        if (isDocumentFile(file)) {
+          const response = await fetch(
+            `${API_BASE_URL}/projects/${activeProjectId}/documents/upload`,
+            {
+              method: "POST",
+              body: formData,
+            },
+          );
+
+          if (!response.ok) {
+            const errorBody = (await response.json().catch(() => null)) as {
+              detail?: string;
+            } | null;
+            throw new Error(errorBody?.detail || `Could not upload ${file.name}.`);
+          }
+
+          const result = (await response.json()) as DocumentUploadResult;
+          uploadedDocuments.push(result.document);
+          continue;
+        }
+
+        throw new Error(
+          `${file.name} is not supported. Upload CSV, PDF, TXT, or Markdown files.`,
+        );
       }
 
-      const result = (await response.json()) as DatasetUploadResult;
-      setUploadPreview(result.preview);
-      setTargetColumn(result.preview.column_names[0] ?? "");
+      setUploadPreview(latestCsvPreview);
+      setTargetColumn(latestCsvPreview?.column_names[0] ?? "");
       setModelTrainingResult(null);
-      setSuccessMessage(null);
-      setSelectedCsvFile(null);
+      setDocuments((currentDocuments) => [
+        ...uploadedDocuments,
+        ...currentDocuments,
+      ]);
+      setSelectedUploadFiles([]);
+      if (uploadedDatasetCount > 0) {
+        await loadDatasets(activeProjectId);
+      }
       setActiveWorkbenchTab("files");
-      await loadDatasets(activeProjectId);
+      setSuccessMessage(
+        buildUploadSuccessMessage(uploadedDatasetCount, uploadedDocuments.length),
+      );
     } catch (error) {
       setUploadPreview(null);
       setTargetColumn("");
       setModelTrainingResult(null);
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not upload CSV.",
+        error instanceof Error ? error.message : "Could not upload files.",
       );
     } finally {
       setIsUploadingCsv(false);
+      setIsUploadingDocument(false);
+    }
+  }
+
+  async function handleDeleteDocument(document: Document) {
+    if (!activeProjectId) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete document "${document.filename}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setDeletingDocumentId(document.id);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${activeProjectId}/documents/${document.id}`,
+        {
+          method: "DELETE",
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Could not delete document.");
+      }
+
+      setDocuments((currentDocuments) =>
+        currentDocuments.filter(
+          (currentDocument) => currentDocument.id !== document.id,
+        ),
+      );
+      setSuccessMessage("Document deleted.");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not delete document.",
+      );
+    } finally {
+      setDeletingDocumentId(null);
     }
   }
 
@@ -597,8 +808,9 @@ export default function Home() {
         throw new Error("The copilot could not respond right now.");
       }
 
-      const result = (await response.json()) as { reply?: string };
+      const result = (await response.json()) as ChatResponse;
       const assistantReply =
+        result.message?.trim() ||
         result.reply?.trim() ||
         "I did not receive a usable reply from the copilot.";
       setChatMessages((currentMessages) => [
@@ -608,6 +820,10 @@ export default function Home() {
           role: "assistant",
           created_at: new Date().toISOString(),
           content: assistantReply,
+          tool_used: result.tool_used,
+          tool_name: result.tool_name,
+          tool_result: result.tool_result,
+          pending_action: result.pending_action,
         },
       ]);
       await loadChatHistory(activeProjectId);
@@ -832,7 +1048,7 @@ export default function Home() {
                     <div className="grid gap-4 sm:grid-cols-3">
                       <Metric
                         label="Files"
-                        value={datasets.length.toString()}
+                        value={(datasets.length + documents.length).toString()}
                       />
                       <Metric
                         label="Rows"
@@ -856,22 +1072,29 @@ export default function Home() {
 
                     <WorkbenchTabs
                       activeTab={activeWorkbenchTab}
-                      datasetCount={datasets.length}
+                      fileCount={datasets.length + documents.length}
                       onTabChange={setActiveWorkbenchTab}
                     />
 
                     {activeWorkbenchTab === "upload" ? (
-                      <CsvUploadPanel
-                        isUploadingCsv={isUploadingCsv}
-                        onFileChange={(file) => {
-                          setSelectedCsvFile(file);
+                      <UnifiedUploadPanel
+                        isUploading={isUploadingCsv || isUploadingDocument}
+                        onFilesAdd={(files) => {
+                          setSelectedUploadFiles((currentFiles) => [
+                            ...currentFiles,
+                            ...files,
+                          ]);
                           setUploadPreview(null);
                           setTargetColumn("");
                           setModelTrainingResult(null);
                           setSuccessMessage(null);
                         }}
-                        onUploadPreview={handleUploadPreview}
-                        selectedCsvFile={selectedCsvFile}
+                        onFilesClear={() => {
+                          setSelectedUploadFiles([]);
+                          setSuccessMessage(null);
+                        }}
+                        onUpload={handleUploadFiles}
+                        selectedFiles={selectedUploadFiles}
                         uploadPreview={uploadPreview}
                       />
                     ) : null}
@@ -879,23 +1102,34 @@ export default function Home() {
                     {activeWorkbenchTab === "files" ? (
                       <DatasetFilesPanel
                         datasets={datasets}
+                        documents={documents}
                         deletingDatasetId={deletingDatasetId}
+                        deletingDocumentId={deletingDocumentId}
                         isLoadingDatasets={isLoadingDatasets}
+                        isLoadingDocuments={isLoadingDocuments}
                         onDeleteDataset={handleDeleteDataset}
+                        onDeleteDocument={handleDeleteDocument}
                       />
                     ) : null}
 
                     {activeWorkbenchTab === "model" ? (
                       <ModelWorkbenchPanel
+                        datasets={datasets}
                         isTrainingModel={isTrainingModel}
                         isLoadingModelRuns={isLoadingModelRuns}
                         modelDataset={modelDataset}
                         modelRuns={modelRuns}
                         modelTrainingResult={modelTrainingResult}
+                        onDatasetChange={(datasetId) => {
+                          setSelectedModelDatasetId(datasetId);
+                          setTargetColumn("");
+                          setModelTrainingResult(null);
+                        }}
                         onTargetColumnChange={(columnName) => {
                           setTargetColumn(columnName);
                           setModelTrainingResult(null);
                         }}
+                        selectedDatasetId={selectedModelDatasetId}
                         onTrainModel={handleTrainModel}
                         targetColumn={targetColumn}
                       />
@@ -1053,6 +1287,9 @@ function CopilotChatPanel({
                 <p className="whitespace-pre-wrap break-words">
                   {message.content}
                 </p>
+                {message.role === "assistant" && message.tool_result ? (
+                  <AgentToolResultCard result={message.tool_result} />
+                ) : null}
               </div>
             </div>
           ))
@@ -1100,46 +1337,101 @@ function CopilotChatPanel({
   );
 }
 
-function CsvUploadPanel({
-  isUploadingCsv,
-  onFileChange,
-  onUploadPreview,
-  selectedCsvFile,
+function UnifiedUploadPanel({
+  isUploading,
+  onFilesAdd,
+  onFilesClear,
+  onUpload,
+  selectedFiles,
   uploadPreview,
 }: {
-  isUploadingCsv: boolean;
-  onFileChange: (file: File | null) => void;
-  onUploadPreview: (event: FormEvent<HTMLFormElement>) => void;
-  selectedCsvFile: File | null;
+  isUploading: boolean;
+  onFilesAdd: (files: File[]) => void;
+  onFilesClear: () => void;
+  onUpload: (event: FormEvent<HTMLFormElement>) => void;
+  selectedFiles: File[];
   uploadPreview: DatasetUploadPreview | null;
 }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>CSV upload</CardTitle>
-      </CardHeader>
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    onFilesAdd(Array.from(event.dataTransfer.files));
+  }
 
-      <form
-        onSubmit={onUploadPreview}
-        className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"
-      >
-        <Input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-          className="text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-200 hover:file:bg-zinc-700"
-        />
-        <Button
-          type="submit"
-          disabled={!selectedCsvFile || isUploadingCsv}
-          variant="secondary"
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Upload files</CardTitle>
+        </CardHeader>
+
+        <form
+          onSubmit={onUpload}
+          className="space-y-3 px-5 py-4"
         >
-          {isUploadingCsv ? "Uploading..." : "Upload CSV"}
-        </Button>
-      </form>
+          <div
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDrop}
+            className="rounded-md border border-dashed border-zinc-700 bg-[#0b1017] px-4 py-8 text-center transition hover:border-zinc-500"
+          >
+            <p className="text-sm font-medium text-zinc-200">Drop files here</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              CSV, PDF, TXT, and Markdown files are routed automatically.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <Input
+              type="file"
+              multiple
+              accept=".csv,.pdf,.txt,.md,.markdown,text/csv,application/pdf,text/plain,text/markdown"
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                onFilesAdd(files);
+                event.target.value = "";
+              }}
+              className="text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-200 hover:file:bg-zinc-700"
+            />
+            <Button
+              type="submit"
+              disabled={selectedFiles.length === 0 || isUploading}
+              variant="secondary"
+            >
+              {isUploading
+                ? "Uploading..."
+                : `Upload File${selectedFiles.length === 1 ? "" : "s"}`}
+            </Button>
+          </div>
+
+          {selectedFiles.length > 0 ? (
+            <div className="rounded-md border border-zinc-800 bg-[#0b1017] px-3 py-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-zinc-400">
+                  {selectedFiles.length} selected
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onFilesClear}
+                  disabled={isUploading}
+                >
+                  Clear
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {selectedFiles.map((file, index) => (
+                  <Badge key={`${file.name}-${file.size}-${index}`}>
+                    {file.name}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </form>
+      </Card>
 
       {uploadPreview ? (
-        <div className="border-t border-zinc-800 px-5 py-5">
+        <Card className="px-5 py-5">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h4 className="text-base font-semibold">
@@ -1171,19 +1463,19 @@ function CsvUploadPanel({
               rows={uploadPreview.preview}
             />
           </div>
-        </div>
+        </Card>
       ) : null}
-    </Card>
+    </div>
   );
 }
 
 function WorkbenchTabs({
   activeTab,
-  datasetCount,
+  fileCount,
   onTabChange,
 }: {
   activeTab: WorkbenchTab;
-  datasetCount: number;
+  fileCount: number;
   onTabChange: (tab: WorkbenchTab) => void;
 }) {
   const tabs: Array<{
@@ -1193,7 +1485,7 @@ function WorkbenchTabs({
     count?: number;
   }> = [
     { id: "upload", label: "Upload", icon: Upload },
-    { id: "files", label: "Files", icon: Files, count: datasetCount },
+    { id: "files", label: "Files", icon: Files, count: fileCount },
     { id: "model", label: "Model", icon: BarChart3 },
   ];
 
@@ -1227,16 +1519,29 @@ function WorkbenchTabs({
 
 function DatasetFilesPanel({
   datasets,
+  documents,
   deletingDatasetId,
+  deletingDocumentId,
   isLoadingDatasets,
+  isLoadingDocuments,
   onDeleteDataset,
+  onDeleteDocument,
 }: {
   datasets: Dataset[];
+  documents: Document[];
   deletingDatasetId: number | null;
+  deletingDocumentId: number | null;
   isLoadingDatasets: boolean;
+  isLoadingDocuments: boolean;
   onDeleteDataset: (dataset: Dataset) => void;
+  onDeleteDocument: (document: Document) => void;
 }) {
-  if (datasets.length === 0 && !isLoadingDatasets) {
+  if (
+    datasets.length === 0 &&
+    documents.length === 0 &&
+    !isLoadingDatasets &&
+    !isLoadingDocuments
+  ) {
     return (
       <Card className="border-dashed px-5 py-10 text-center">
         <h4 className="text-base font-semibold text-zinc-100">
@@ -1250,59 +1555,118 @@ function DatasetFilesPanel({
   }
 
   return (
-    <Card className="overflow-hidden">
-      <div className="grid grid-cols-12 border-b border-zinc-800 bg-[#131b26] px-4 py-3 text-xs font-medium text-zinc-500">
-        <span className="col-span-4">Filename</span>
-        <span className="col-span-2 text-right">Rows</span>
-        <span className="col-span-2 text-right">Columns</span>
-        <span className="col-span-2 text-right">Uploaded</span>
-        <span className="col-span-2 text-right">Action</span>
-      </div>
+    <div className="space-y-4">
+      <Card className="overflow-hidden">
+        <div className="grid grid-cols-12 border-b border-zinc-800 bg-[#131b26] px-4 py-3 text-xs font-medium text-zinc-500">
+          <span className="col-span-4">Dataset</span>
+          <span className="col-span-2 text-right">Rows</span>
+          <span className="col-span-2 text-right">Columns</span>
+          <span className="col-span-2 text-right">Uploaded</span>
+          <span className="col-span-2 text-right">Action</span>
+        </div>
 
-      {isLoadingDatasets ? (
-        <div className="px-4 py-4 text-sm text-zinc-500">Loading files...</div>
-      ) : (
-        datasets.map((dataset) => (
-          <div
-            key={dataset.id}
-            className="grid grid-cols-12 items-center border-b border-zinc-800/80 px-4 py-4 text-sm transition hover:bg-[#151f2b] last:border-b-0"
-          >
-            <span className="col-span-4 truncate font-medium text-zinc-100">
-              {dataset.filename}
-            </span>
-            <span className="col-span-2 text-right text-zinc-400">
-              {dataset.row_count.toLocaleString()}
-            </span>
-            <span className="col-span-2 text-right text-zinc-400">
-              {dataset.column_count.toLocaleString()}
-            </span>
-            <span className="col-span-2 text-right text-zinc-500">
-              {formatDate(dataset.created_at)}
-            </span>
-            <span className="col-span-2 text-right">
-              <IconDeleteButton
-                ariaLabel={`Delete dataset ${dataset.filename}`}
-                disabled={deletingDatasetId === dataset.id}
-                onClick={() => onDeleteDataset(dataset)}
-              />
-            </span>
+        {isLoadingDatasets ? (
+          <div className="px-4 py-4 text-sm text-zinc-500">
+            Loading datasets...
           </div>
-        ))
-      )}
-    </Card>
+        ) : datasets.length === 0 ? (
+          <div className="px-4 py-4 text-sm text-zinc-500">
+            No datasets uploaded yet.
+          </div>
+        ) : (
+          datasets.map((dataset) => (
+            <div
+              key={dataset.id}
+              className="grid grid-cols-12 items-center border-b border-zinc-800/80 px-4 py-4 text-sm transition hover:bg-[#151f2b] last:border-b-0"
+            >
+              <span className="col-span-4 truncate font-medium text-zinc-100">
+                {dataset.filename}
+              </span>
+              <span className="col-span-2 text-right text-zinc-400">
+                {dataset.row_count.toLocaleString()}
+              </span>
+              <span className="col-span-2 text-right text-zinc-400">
+                {dataset.column_count.toLocaleString()}
+              </span>
+              <span className="col-span-2 text-right text-zinc-500">
+                {formatDate(dataset.created_at)}
+              </span>
+              <span className="col-span-2 text-right">
+                <IconDeleteButton
+                  ariaLabel={`Delete dataset ${dataset.filename}`}
+                  disabled={deletingDatasetId === dataset.id}
+                  onClick={() => onDeleteDataset(dataset)}
+                />
+              </span>
+            </div>
+          ))
+        )}
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="grid grid-cols-12 border-b border-zinc-800 bg-[#131b26] px-4 py-3 text-xs font-medium text-zinc-500">
+          <span className="col-span-4">Document</span>
+          <span className="col-span-2 text-right">Type</span>
+          <span className="col-span-2 text-right">Size</span>
+          <span className="col-span-2 text-right">Uploaded</span>
+          <span className="col-span-2 text-right">Action</span>
+        </div>
+
+        {isLoadingDocuments ? (
+          <div className="px-4 py-4 text-sm text-zinc-500">
+            Loading documents...
+          </div>
+        ) : documents.length === 0 ? (
+          <div className="px-4 py-4 text-sm text-zinc-500">
+            No documents uploaded yet.
+          </div>
+        ) : (
+          documents.map((document) => (
+            <div
+              key={document.id}
+              className="grid grid-cols-12 items-center border-b border-zinc-800/80 px-4 py-4 text-sm transition hover:bg-[#151f2b] last:border-b-0"
+            >
+              <span className="col-span-4 truncate font-medium text-zinc-100">
+                {document.filename}
+              </span>
+              <span className="col-span-2 truncate text-right text-zinc-400">
+                {formatMimeType(document.mime_type)}
+              </span>
+              <span className="col-span-2 text-right text-zinc-400">
+                {formatFileSize(document.file_size)}
+              </span>
+              <span className="col-span-2 text-right text-zinc-500">
+                {formatDate(document.created_at)}
+              </span>
+              <span className="col-span-2 text-right">
+                <IconDeleteButton
+                  ariaLabel={`Delete document ${document.filename}`}
+                  disabled={deletingDocumentId === document.id}
+                  onClick={() => onDeleteDocument(document)}
+                />
+              </span>
+            </div>
+          ))
+        )}
+      </Card>
+    </div>
   );
 }
 
 function ModelWorkbenchPanel({
+  datasets,
   isTrainingModel,
   isLoadingModelRuns,
   modelDataset,
   modelRuns,
   modelTrainingResult,
+  onDatasetChange,
   onTargetColumnChange,
   onTrainModel,
+  selectedDatasetId,
   targetColumn,
 }: {
+  datasets: Dataset[];
   isTrainingModel: boolean;
   isLoadingModelRuns: boolean;
   modelDataset: {
@@ -1315,8 +1679,10 @@ function ModelWorkbenchPanel({
   } | null;
   modelRuns: ModelRun[];
   modelTrainingResult: ModelTrainingResult | null;
+  onDatasetChange: (datasetId: number) => void;
   onTargetColumnChange: (columnName: string) => void;
   onTrainModel: () => void;
+  selectedDatasetId: number | null;
   targetColumn: string;
 }) {
   if (!modelDataset) {
@@ -1347,7 +1713,29 @@ function ModelWorkbenchPanel({
           </p>
         </div>
         <div className="rounded-md border border-zinc-800 bg-[#0b1017] px-4 py-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+            {datasets.length > 0 ? (
+              <div>
+                <label
+                  htmlFor="model-dataset"
+                  className="text-sm font-medium text-zinc-300"
+                >
+                  Dataset
+                </label>
+                <select
+                  id="model-dataset"
+                  value={selectedDatasetId ?? modelDataset.datasetId ?? ""}
+                  onChange={(event) => onDatasetChange(Number(event.target.value))}
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {datasets.map((dataset) => (
+                    <option key={dataset.id} value={dataset.id}>
+                      {dataset.filename}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
             <div className="flex-1">
               <label
                 htmlFor="target-column"
@@ -1628,6 +2016,131 @@ function IconDeleteButton({
   );
 }
 
+function AgentToolResultCard({ result }: { result: AgentToolResult }) {
+  if (result.success === false) {
+    return (
+      <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+        {result.error || "The tool could not complete."}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "get_dataset_summary") {
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-zinc-100">
+            {result.filename || "Dataset"}
+          </span>
+          <Badge>{result.rows?.toLocaleString() ?? "-"} rows</Badge>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-zinc-400">
+          <span>{result.column_count ?? result.columns?.length ?? 0} columns</span>
+          <span>{result.numeric_columns?.length ?? 0} numeric</span>
+        </div>
+        {result.columns && result.columns.length > 0 ? (
+          <p className="mt-2 line-clamp-2 text-zinc-500">
+            {result.columns.slice(0, 12).join(", ")}
+            {result.columns.length > 12 ? "..." : ""}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "show_missing_values") {
+    const missingEntries = Object.entries(result.columns_with_missing || {});
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-zinc-100">
+            Missing values
+          </span>
+          <Badge>{result.total_missing_values ?? 0} total</Badge>
+        </div>
+        {missingEntries.length > 0 ? (
+          <div className="mt-2 space-y-1">
+            {missingEntries.slice(0, 5).map(([column, count]) => (
+              <div key={column} className="flex justify-between gap-3 text-zinc-400">
+                <span className="truncate">{column}</span>
+                <span>{count.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-zinc-500">No missing values found.</p>
+        )}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "train_baseline_model") {
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-zinc-100">
+            Model run #{result.model_run_id ?? "-"}
+          </span>
+          <Badge>{result.task_type || "model"}</Badge>
+        </div>
+        <p className="mt-2 text-zinc-400">
+          Target: {result.target_column || "-"}
+        </p>
+        {result.metrics ? (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {Object.entries(result.metrics)
+              .slice(0, 4)
+              .map(([metric, value]) => (
+                <div key={metric} className="rounded border border-zinc-800 p-2">
+                  <p className="text-zinc-500">{formatMetricName(metric)}</p>
+                  <p className="mt-1 font-medium text-zinc-100">
+                    {formatMetricValue(value)}
+                  </p>
+                </div>
+              ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "answer_document_question") {
+    const sources = result.sources || [];
+    if (sources.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-zinc-100">Sources</span>
+          <Badge>{sources.length}</Badge>
+        </div>
+        <div className="mt-2 space-y-2">
+          {sources.slice(0, 5).map((source) => (
+            <div
+              key={`${source.document_id}-${source.chunk_id}`}
+              className="rounded border border-zinc-800 p-2"
+            >
+              <div className="flex items-center justify-between gap-3 text-zinc-400">
+                <span className="truncate font-medium text-zinc-200">
+                  {source.filename}
+                </span>
+                <span>chunk {source.chunk_index}</span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-zinc-500">
+                {source.content_preview}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function formatCellValue(value: unknown) {
   if (value === null || value === undefined) {
     return "";
@@ -1640,6 +2153,66 @@ function formatDate(value: string) {
     month: "short",
     day: "numeric",
   }).format(new Date(value));
+}
+
+function isCsvFile(file: File) {
+  return (
+    file.type === "text/csv" ||
+    file.name.toLowerCase().endsWith(".csv")
+  );
+}
+
+function isDocumentFile(file: File) {
+  const filename = file.name.toLowerCase();
+  return (
+    file.type === "application/pdf" ||
+    file.type === "text/plain" ||
+    file.type === "text/markdown" ||
+    filename.endsWith(".pdf") ||
+    filename.endsWith(".txt") ||
+    filename.endsWith(".md") ||
+    filename.endsWith(".markdown")
+  );
+}
+
+function buildUploadSuccessMessage(datasetCount: number, documentCount: number) {
+  const parts: string[] = [];
+  if (datasetCount > 0) {
+    parts.push(`${datasetCount} dataset${datasetCount === 1 ? "" : "s"}`);
+  }
+  if (documentCount > 0) {
+    parts.push(`${documentCount} document${documentCount === 1 ? "" : "s"}`);
+  }
+
+  if (parts.length === 0) {
+    return "No files uploaded.";
+  }
+
+  return `${parts.join(" and ")} uploaded.`;
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMimeType(value: string) {
+  if (value === "application/pdf") {
+    return "PDF";
+  }
+
+  if (value.startsWith("text/")) {
+    return value.replace("text/", "").toUpperCase();
+  }
+
+  return value;
 }
 
 function formatMetricName(value: string) {

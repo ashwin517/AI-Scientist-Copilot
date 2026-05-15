@@ -50,7 +50,7 @@ class AgentService:
         model_result: dict[str, Any] | None = None,
     ) -> ChatResponse:
         if project_id is not None and get_project(db, project_id) is None:
-            return ChatResponse(reply="Project not found.")
+            return _chat_response("Project not found.")
 
         if project_id is not None:
             create_chat_message(
@@ -89,7 +89,7 @@ class AgentService:
             return response
 
         result = self.executor.execute(db=db, project_id=project_id, intent=intent)
-        response = ChatResponse(reply=self._summarize_tool_result(message, result))
+        response = self._tool_response(message, result)
         self._save_assistant_message(db, project_id, response.reply)
         return response
 
@@ -105,7 +105,7 @@ class AgentService:
 
         if _is_cancel_message(message):
             clear_pending_action(db, project_id)
-            return ChatResponse(reply="Canceled the pending action.")
+            return _chat_response("Canceled the pending action.")
 
         if pending_action.tool_name != "train_baseline_model":
             clear_pending_action(db, project_id)
@@ -125,7 +125,7 @@ class AgentService:
             )
         except ValueError as exc:
             clear_pending_action(db, project_id)
-            return ChatResponse(reply=str(exc))
+            return _chat_response(str(exc))
 
         slot_result = fill_target_column(message, available_columns)
         if slot_result.value is None:
@@ -139,7 +139,14 @@ class AgentService:
                     "Which target column should I use? Available columns: "
                     f"{_format_columns(available_columns)}"
                 )
-            return ChatResponse(reply=reply)
+            return _chat_response(
+                reply,
+                pending_action=_pending_action_payload(
+                    pending_action.tool_name,
+                    arguments,
+                    missing_fields,
+                ),
+            )
 
         arguments["target_column"] = slot_result.value
         result = self.executor.execute(
@@ -156,7 +163,7 @@ class AgentService:
         if result.success:
             clear_pending_action(db, project_id)
 
-        return ChatResponse(reply=self._summarize_tool_result(message, result))
+        return self._tool_response(message, result)
 
     def _create_pending_train_action(
         self,
@@ -171,7 +178,7 @@ class AgentService:
                 arguments,
             )
         except ValueError as exc:
-            return ChatResponse(reply=str(exc))
+            return _chat_response(str(exc))
 
         save_pending_action(
             db,
@@ -180,11 +187,26 @@ class AgentService:
             arguments,
             ["target_column"],
         )
-        return ChatResponse(
-            reply=(
-                "Which target column should I use? "
-                f"Available columns: {_format_columns(available_columns)}"
-            )
+        reply = (
+            "Which target column should I use? "
+            f"Available columns: {_format_columns(available_columns)}"
+        )
+        return _chat_response(
+            reply,
+            pending_action=_pending_action_payload(
+                "train_baseline_model",
+                arguments,
+                ["target_column"],
+            ),
+        )
+
+    def _tool_response(self, message: str, result: ToolResult) -> ChatResponse:
+        reply = self._summarize_tool_result(message, result)
+        return _chat_response(
+            reply,
+            tool_used=True,
+            tool_name=result.tool_name,
+            tool_result=_structured_tool_result(result),
         )
 
     def _summarize_tool_result(self, message: str, result: ToolResult) -> str:
@@ -192,6 +214,12 @@ class AgentService:
             return _deterministic_summary(result)
 
         if result.tool_name == "list_datasets" and result.data.get("count") == 0:
+            return _deterministic_summary(result)
+
+        if result.tool_name == "train_baseline_model":
+            return _deterministic_summary(result)
+
+        if result.tool_name == "answer_document_question":
             return _deterministic_summary(result)
 
         prompt = build_tool_summary_prompt(message, result)
@@ -242,8 +270,8 @@ def _deterministic_summary(result: ToolResult) -> str:
             project_id = result.data.get("project_id")
             return (
                 f"No datasets are saved in active project {project_id} yet. "
-                "If you uploaded a CSV in the workspace, make sure it was saved "
-                "to this project, or switch back to the project where it was saved."
+                "Please upload a CSV dataset in this project, or switch back to "
+                "the project where it was uploaded."
             )
         lines = ["Saved datasets in this project:"]
         for dataset in datasets:
@@ -297,7 +325,127 @@ def _deterministic_summary(result: ToolResult) -> str:
             )
         return "\n".join(lines)
 
+    if result.tool_name == "answer_document_question":
+        return str(result.data.get("answer") or "")
+
     return json.dumps(result.data, indent=2, sort_keys=True, default=str)
+
+
+def _chat_response(
+    reply: str,
+    *,
+    tool_used: bool = False,
+    tool_name: str | None = None,
+    tool_result: dict[str, Any] | None = None,
+    pending_action: dict[str, Any] | None = None,
+) -> ChatResponse:
+    return ChatResponse(
+        reply=reply,
+        message=reply,
+        tool_used=tool_used,
+        tool_name=tool_name,
+        tool_result=tool_result,
+        pending_action=pending_action,
+    )
+
+
+def _structured_tool_result(result: ToolResult) -> dict[str, Any]:
+    if not result.success:
+        return {
+            "tool_name": result.tool_name,
+            "success": False,
+            "error": result.error,
+        }
+
+    if result.tool_name == "get_dataset_summary":
+        dataset = result.data.get("dataset", {})
+        column_names = _string_list(result.data.get("column_names", []))
+        column_types = result.data.get("column_types", {})
+        return {
+            "tool_name": result.tool_name,
+            "success": True,
+            "dataset_id": dataset.get("id"),
+            "filename": dataset.get("filename"),
+            "rows": dataset.get("row_count"),
+            "column_count": dataset.get("column_count"),
+            "columns": column_names,
+            "numeric_columns": _columns_by_type(column_types, numeric=True),
+            "categorical_columns": _columns_by_type(column_types, numeric=False),
+            "missing_values": result.data.get("missing_values", {}),
+            "preview": result.data.get("preview", []),
+        }
+
+    if result.tool_name == "show_missing_values":
+        dataset = result.data.get("dataset", {})
+        return {
+            "tool_name": result.tool_name,
+            "success": True,
+            "dataset_id": dataset.get("id"),
+            "filename": dataset.get("filename"),
+            "rows": dataset.get("row_count"),
+            "column_count": dataset.get("column_count"),
+            "missing_values": result.data.get("missing_values", {}),
+            "columns_with_missing": result.data.get("columns_with_missing", {}),
+            "total_missing_values": result.data.get("total_missing_values", 0),
+        }
+
+    if result.tool_name == "train_baseline_model":
+        return {
+            "tool_name": result.tool_name,
+            "success": True,
+            "model_run_id": result.data.get("model_run_id"),
+            "dataset_id": result.data.get("dataset_id"),
+            "target_column": result.data.get("target_column"),
+            "task_type": result.data.get("task_type"),
+            "metrics": result.data.get("metrics", {}),
+            "top_features": result.data.get("feature_importance", []),
+        }
+
+    if result.tool_name == "answer_document_question":
+        return {
+            "tool_name": result.tool_name,
+            "success": True,
+            "answer": result.data.get("answer"),
+            "sources": result.data.get("sources", []),
+        }
+
+    return {
+        "tool_name": result.tool_name,
+        "success": True,
+        **result.data,
+    }
+
+
+def _pending_action_payload(
+    tool_name: str,
+    arguments: dict[str, Any],
+    missing_fields: list[str],
+) -> dict[str, Any]:
+    return {
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "missing_fields": missing_fields,
+    }
+
+
+def _string_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values]
+
+
+def _columns_by_type(column_types: Any, *, numeric: bool) -> list[str]:
+    if not isinstance(column_types, dict):
+        return []
+
+    numeric_tokens = ("int", "float", "double", "decimal", "number")
+    columns: list[str] = []
+    for column, dtype in column_types.items():
+        dtype_text = str(dtype).casefold()
+        is_numeric = any(token in dtype_text for token in numeric_tokens)
+        if is_numeric == numeric:
+            columns.append(str(column))
+    return columns
 
 
 def _available_columns_for_training(

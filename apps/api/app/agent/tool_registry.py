@@ -7,6 +7,7 @@ from app.agent.tools.dataset_tools import (
     list_datasets,
     show_missing_values,
 )
+from app.agent.tools.document_tools import answer_document_question
 from app.agent.tools.model_tools import list_model_runs, train_baseline_model
 
 
@@ -48,6 +49,11 @@ class ToolRegistry:
                 handler=list_model_runs,
                 description="List previously trained model runs when available.",
             ),
+            "answer_document_question": ToolDefinition(
+                name="answer_document_question",
+                handler=answer_document_question,
+                description="Answer a question from uploaded project documents.",
+            ),
         }
 
     def get(self, tool_name: str) -> ToolDefinition | None:
@@ -55,4 +61,3 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return list(self._tools)
-
