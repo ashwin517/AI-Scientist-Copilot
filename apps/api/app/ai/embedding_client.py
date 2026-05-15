@@ -30,9 +30,12 @@ class OllamaEmbeddingClient:
             return EmbeddingResult(embedding=None, error="Cannot embed empty text.")
 
         try:
+            # Ollama embeddings endpoint expects the text under the `input` key.
+            # Be explicit about model and input to ensure the nomic-embed-text
+            # model is used.
             response = requests.post(
                 self.url,
-                json={"model": self.model, "prompt": text},
+                json={"model": self.model, "input": text},
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
@@ -47,7 +50,17 @@ class OllamaEmbeddingClient:
                 error="Ollama returned invalid JSON for embedding request.",
             )
 
-        embedding = data.get("embedding")
+        # Support a few possible response shapes:
+        # 1. Top-level `embedding`: {"embedding": [...]}
+        # 2. OpenAI-like `data` list: {"data": [{"embedding": [...]}, ...]}
+        embedding = None
+        if "embedding" in data and _is_embedding(data.get("embedding")):
+            embedding = data.get("embedding")
+        elif isinstance(data.get("data"), list) and data["data"]:
+            first = data["data"][0]
+            if isinstance(first, dict) and _is_embedding(first.get("embedding")):
+                embedding = first.get("embedding")
+
         if not _is_embedding(embedding):
             return EmbeddingResult(
                 embedding=None,

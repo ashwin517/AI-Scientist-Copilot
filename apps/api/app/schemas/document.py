@@ -20,6 +20,7 @@ class DocumentProcessingRead(BaseModel):
     chunk_count: int
     embedded_chunk_count: int
     embedding_error_count: int
+    embedding_errors: list[dict] = Field(default_factory=list)
 
 
 class DocumentChunkPreviewRead(BaseModel):

@@ -1,6 +1,6 @@
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -23,6 +23,7 @@ class DocumentProcessingResult:
     chunk_count: int
     embedded_chunk_count: int
     embedding_error_count: int
+    embedding_errors: list[dict] = field(default_factory=list)
 
 
 def process_document(
@@ -56,31 +57,226 @@ def process_document(
     )
     client = embedding_client or OllamaEmbeddingClient()
 
-    delete_document_chunks(db, document, commit=False)
-    embedded_chunk_count = 0
-    embedding_error_count = 0
+    # If the document already has chunks, try to preserve them and only
+    # fill in missing embeddings. If the existing chunks differ in count
+    # or content, rebuild them.
+    existing_chunks = list_document_chunks(db, document)
 
-    for chunk_index, content in enumerate(chunks):
-        embedding_result = client.embed_text(content)
-        embedding_json = None
-        if embedding_result.embedding is None:
-            embedding_error_count += 1
-        else:
-            embedded_chunk_count += 1
-            embedding_json = json.dumps(embedding_result.embedding)
+    embedding_errors_temp: list[tuple[object, str]] = []
 
-        db.add(
-            DocumentChunk(
+    if existing_chunks and len(existing_chunks) == len(chunks):
+        # Verify contents match; if not, fallback to rebuild.
+        contents_match = all(
+            existing_chunks[i].content == chunks[i] for i in range(len(chunks))
+        )
+        if contents_match:
+            embedded_chunk_count = sum(
+                1 for c in existing_chunks if c.embedding_json
+            )
+            embedding_error_count = 0
+
+            for chunk_index, content in enumerate(chunks):
+                existing = existing_chunks[chunk_index]
+                if existing.embedding_json is None:
+                    try:
+                        embedding_result = client.embed_text(content)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        embedding_result = None
+                        err_msg = str(exc)
+
+                    if embedding_result is None or embedding_result.embedding is None:
+                        embedding_error_count += 1
+                        err_msg = (
+                            embedding_result.error if embedding_result is not None else err_msg
+                        )
+                        model_name = getattr(client, "model", None)
+                        model_url = getattr(client, "url", None)
+                        logger.warning(
+                            "embedding failed project_id=%s document_id=%s chunk_index=%s model=%s url=%s error=%s",
+                            document.project_id,
+                            document.id,
+                            chunk_index,
+                            model_name,
+                            model_url,
+                            err_msg,
+                        )
+                        embedding_errors_temp.append((existing, err_msg or "unknown"))
+                    else:
+                        existing.embedding_json = json.dumps(
+                            embedding_result.embedding
+                        )
+                        embedded_chunk_count += 1
+                        db.add(existing)
+
+            db.commit()
+            # Build final embedding_errors list with ids for the preserved-chunks path
+            embedding_errors: list[dict] = []
+            for chunk_obj, err in embedding_errors_temp:
+                chunk_id = getattr(chunk_obj, "id", None)
+                embedding_errors.append({"chunk_id": chunk_id, "error": err})
+
+            logger.info(
+                "document processing complete project_id=%s document_id=%s filename=%s chunks=%s embedded_chunks=%s embedding_errors=%s",
+                document.project_id,
+                document.id,
+                document.filename,
+                len(chunks),
+                embedded_chunk_count,
+                embedding_error_count,
+            )
+
+            return DocumentProcessingResult(
                 document_id=document.id,
                 project_id=document.project_id,
-                chunk_index=chunk_index,
-                content=content,
-                char_count=len(content),
-                embedding_json=embedding_json,
+                chunk_count=len(chunks),
+                embedded_chunk_count=embedded_chunk_count,
+                embedding_error_count=embedding_error_count,
+                embedding_errors=embedding_errors,
             )
-        )
+        else:
+            # Contents changed: delete and rebuild below.
+            delete_document_chunks(db, document, commit=False)
+            embedded_chunk_count = 0
+            embedding_error_count = 0
 
-    db.commit()
+            for chunk_index, content in enumerate(chunks):
+                try:
+                    embedding_result = client.embed_text(content)
+                except Exception as exc:  # pragma: no cover - defensive
+                    embedding_result = None
+                    err_msg = str(exc)
+
+                embedding_json = None
+                if embedding_result is None or embedding_result.embedding is None:
+                    embedding_error_count += 1
+                    err_msg = (
+                        embedding_result.error if embedding_result is not None else err_msg
+                    )
+                    model_name = getattr(client, "model", None)
+                    model_url = getattr(client, "url", None)
+                    logger.warning(
+                        "embedding failed project_id=%s document_id=%s chunk_index=%s model=%s url=%s error=%s",
+                        document.project_id,
+                        document.id,
+                        chunk_index,
+                        model_name,
+                        model_url,
+                        err_msg,
+                    )
+                    # Record against the chunk object; id will be available after commit
+                    temp_chunk = DocumentChunk(
+                        document_id=document.id,
+                        project_id=document.project_id,
+                        chunk_index=chunk_index,
+                        content=content,
+                        char_count=len(content),
+                        embedding_json=None,
+                    )
+                    db.add(temp_chunk)
+                    embedding_errors_temp.append((temp_chunk, err_msg or "unknown"))
+                    continue
+                else:
+                    embedded_chunk_count += 1
+                    embedding_json = json.dumps(embedding_result.embedding)
+
+                db.add(
+                    DocumentChunk(
+                        document_id=document.id,
+                        project_id=document.project_id,
+                        chunk_index=chunk_index,
+                        content=content,
+                        char_count=len(content),
+                        embedding_json=embedding_json,
+                    )
+                )
+
+            db.commit()
+            # Build final embedding_errors list with ids
+            embedding_errors: list[dict] = []
+            for chunk_obj, err in embedding_errors_temp:
+                chunk_id = getattr(chunk_obj, "id", None)
+                embedding_errors.append({"chunk_id": chunk_id, "error": err})
+
+            return DocumentProcessingResult(
+                document_id=document.id,
+                project_id=document.project_id,
+                chunk_count=len(chunks),
+                embedded_chunk_count=embedded_chunk_count,
+                embedding_error_count=embedding_error_count,
+                embedding_errors=embedding_errors,
+            )
+    else:
+        # No existing chunks or different count: (re)build all chunks.
+        delete_document_chunks(db, document, commit=False)
+        embedded_chunk_count = 0
+        embedding_error_count = 0
+
+        for chunk_index, content in enumerate(chunks):
+            try:
+                embedding_result = client.embed_text(content)
+            except Exception as exc:  # pragma: no cover - defensive
+                embedding_result = None
+                err_msg = str(exc)
+
+            embedding_json = None
+            if embedding_result is None or embedding_result.embedding is None:
+                embedding_error_count += 1
+                err_msg = (
+                    embedding_result.error if embedding_result is not None else err_msg
+                )
+                model_name = getattr(client, "model", None)
+                model_url = getattr(client, "url", None)
+                logger.warning(
+                    "embedding failed project_id=%s document_id=%s chunk_index=%s model=%s url=%s error=%s",
+                    document.project_id,
+                    document.id,
+                    chunk_index,
+                    model_name,
+                    model_url,
+                    err_msg,
+                )
+                # Record the temp chunk so we can report id after commit
+                temp_chunk = DocumentChunk(
+                    document_id=document.id,
+                    project_id=document.project_id,
+                    chunk_index=chunk_index,
+                    content=content,
+                    char_count=len(content),
+                    embedding_json=None,
+                )
+                db.add(temp_chunk)
+                embedding_errors_temp.append((temp_chunk, err_msg or "unknown"))
+                continue
+            else:
+                embedded_chunk_count += 1
+                embedding_json = json.dumps(embedding_result.embedding)
+
+            db.add(
+                DocumentChunk(
+                    document_id=document.id,
+                    project_id=document.project_id,
+                    chunk_index=chunk_index,
+                    content=content,
+                    char_count=len(content),
+                    embedding_json=embedding_json,
+                )
+            )
+
+        db.commit()
+        # Build final embedding_errors list with ids
+        embedding_errors: list[dict] = []
+        for chunk_obj, err in embedding_errors_temp:
+            chunk_id = getattr(chunk_obj, "id", None)
+            embedding_errors.append({"chunk_id": chunk_id, "error": err})
+
+        return DocumentProcessingResult(
+            document_id=document.id,
+            project_id=document.project_id,
+            chunk_count=len(chunks),
+            embedded_chunk_count=embedded_chunk_count,
+            embedding_error_count=embedding_error_count,
+            embedding_errors=embedding_errors,
+        )
     logger.info(
         "document processing complete project_id=%s document_id=%s filename=%s chunks=%s embedded_chunks=%s embedding_errors=%s",
         document.project_id,
@@ -90,6 +286,11 @@ def process_document(
         embedded_chunk_count,
         embedding_error_count,
     )
+    # Fallback return (shouldn't normally be reached because branches return).
+    embedding_errors: list[dict] = []
+    for chunk_obj, err in embedding_errors_temp:
+        chunk_id = getattr(chunk_obj, "id", None)
+        embedding_errors.append({"chunk_id": chunk_id, "error": err})
 
     return DocumentProcessingResult(
         document_id=document.id,
@@ -97,6 +298,7 @@ def process_document(
         chunk_count=len(chunks),
         embedded_chunk_count=embedded_chunk_count,
         embedding_error_count=embedding_error_count,
+        embedding_errors=embedding_errors,
     )
 
 
