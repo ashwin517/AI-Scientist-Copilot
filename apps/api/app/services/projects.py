@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Project
 from app.schemas.project import ProjectCreate
+from app.services.id_reset import reset_empty_id_sequences
 
 
 def create_project(db: Session, project_data: ProjectCreate) -> Project:
@@ -24,4 +25,6 @@ def get_project(db: Session, project_id: int) -> Project | None:
 
 def delete_project(db: Session, project: Project) -> None:
     db.delete(project)
+    db.commit()
+    reset_empty_id_sequences(db)
     db.commit()

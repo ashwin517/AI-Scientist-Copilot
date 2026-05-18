@@ -17,6 +17,9 @@ class ChatResponse(BaseModel):
     tool_used: bool = False
     tool_name: str | None = None
     tool_result: dict[str, Any] | None = None
+    plan_executed: bool = False
+    steps_summary: list[dict[str, Any]] | None = None
+    tools_used: list[str] | None = None
     pending_action: dict[str, Any] | None = None
 
     def model_post_init(self, __context: Any) -> None:

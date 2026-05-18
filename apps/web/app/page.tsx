@@ -13,7 +13,9 @@ import {
   BarChart3,
   ChevronDown,
   ChevronUp,
+  FileText,
   Files,
+  FlaskConical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -110,6 +112,19 @@ type ModelRun = {
   created_at: string;
 };
 
+type ProjectReportListItem = {
+  id: number;
+  project_id: number;
+  report_type: string;
+  title: string;
+  created_at: string;
+};
+
+type ProjectReport = ProjectReportListItem & {
+  content_markdown: string;
+  source_summary: Record<string, unknown>;
+};
+
 type ChatMessage = {
   id: number;
   role: "user" | "assistant";
@@ -130,6 +145,12 @@ type AgentPendingAction = {
 type AgentToolResult = {
   tool_name: string;
   success?: boolean;
+  plan_executed?: boolean;
+  steps_summary?: AgentPlanStep[];
+  tools_used?: string[];
+  completed_steps?: number;
+  failed_steps?: number;
+  message?: string | null;
   answer?: string;
   sources?: AgentToolSource[];
   dataset_id?: number | null;
@@ -148,6 +169,121 @@ type AgentToolResult = {
   metrics?: Record<string, number>;
   top_features?: FeatureImportance[];
   error?: string | null;
+  simulation_run_id?: number | null;
+  simulation_type?: string | null;
+  input?: Record<string, unknown>;
+  time_grid?: number[];
+  CA_profile?: number[];
+  CB_profile?: number[];
+  CC_profile?: number[];
+  final_yield?: number | null;
+  final_impurity?: number | null;
+  conversion?: number | null;
+  rate_constants?: Record<string, number>;
+  note?: string | null;
+  optimization_run_id?: number | null;
+  optimization_type?: string | null;
+  objective?: string | null;
+  constraints?: Record<string, unknown>;
+  search_space?: Record<string, unknown>;
+  best_inputs?: Record<string, unknown>;
+  best_final_yield?: number | null;
+  best_final_impurity?: number | null;
+  best_conversion?: number | null;
+  objective_value?: number | null;
+  top_candidates?: {
+    inputs: Record<string, unknown>;
+    final_yield: number;
+    final_impurity: number;
+    conversion: number;
+    objective_value: number;
+    constraint_satisfied: boolean;
+  }[];
+  evaluated_candidates?: number | null;
+  feasible_candidates?: number | null;
+  optimization_available?: boolean;
+  explanation?: string | null;
+  simulation_comparison?: Record<string, unknown> | null;
+  recommendation_available?: boolean;
+  recommendations?: {
+    rank: number;
+    inputs: Record<string, unknown>;
+    final_yield: number;
+    final_impurity: number;
+    conversion: number;
+    objective_value: number;
+    constraint_satisfied: boolean;
+    reason: string;
+  }[];
+  recommendation_count?: number | null;
+  workflow_run_id?: number | null;
+  workflow_type?: string | null;
+  status?: string | null;
+  workflow_available?: boolean;
+  comparison_available?: boolean;
+  steps?: {
+    name: string;
+    status: string;
+    summary: string;
+    data?: Record<string, unknown> | null;
+  }[];
+  project_name?: string | null;
+  summary?: string | null;
+  current_assets?: Record<string, boolean>;
+  gaps?: string[];
+  recommended_next_actions?: string[];
+  recommended_next_steps?: string[];
+  workflow_runs?: WorkflowRunSummary[];
+  count?: number | null;
+  latest_workflow?: WorkflowRunSummary | null;
+  previous_workflow?: WorkflowRunSummary | null;
+  status_comparison?: Record<string, unknown>;
+  major_project_changes?: {
+    asset: string;
+    previous: boolean;
+    latest: boolean;
+    change: string;
+  }[];
+  workflow_recommendations?: {
+    latest?: string[];
+    previous?: string[];
+    new?: string[];
+    removed?: string[];
+  };
+  report_id?: number | null;
+  report_type?: string | null;
+  title?: string | null;
+  content_markdown?: string | null;
+  source_summary?: Record<string, unknown>;
+  report_available?: boolean;
+  reports?: {
+    report_id?: number | null;
+    report_type?: string | null;
+    title?: string | null;
+    created_at?: string | null;
+    section_count?: number | null;
+  }[];
+  sections?: string[];
+  strengths?: string[];
+  missing_sections?: string[];
+  weak_sections?: {
+    section: string;
+    reason: string;
+  }[];
+  suggested_edits?: string[];
+  limitations?: string[];
+};
+
+type WorkflowRunSummary = {
+  workflow_run_id?: number | null;
+  workflow_type?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  completed_at?: string | null;
+  summary?: string | null;
+  current_assets?: Record<string, boolean>;
+  gaps?: string[];
+  recommended_next_actions?: string[];
 };
 
 type AgentToolSource = {
@@ -165,7 +301,19 @@ type ChatResponse = {
   tool_used?: boolean;
   tool_name?: string | null;
   tool_result?: AgentToolResult | null;
+  plan_executed?: boolean;
+  steps_summary?: AgentPlanStep[] | null;
+  tools_used?: string[] | null;
   pending_action?: AgentPendingAction | null;
+};
+
+type AgentPlanStep = {
+  step_id: number;
+  tool_name: string;
+  arguments_json?: Record<string, unknown>;
+  purpose: string;
+  status: string;
+  result_summary?: string | null;
 };
 
 type DatasetChatSummary = {
@@ -177,7 +325,7 @@ type DatasetChatSummary = {
   profile: DatasetUploadPreview["profile"];
 };
 
-type WorkbenchTab = "upload" | "files" | "model";
+type WorkbenchTab = "upload" | "files" | "model" | "reports";
 
 export default function Home() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -196,6 +344,10 @@ export default function Home() {
   const [modelTrainingResult, setModelTrainingResult] =
     useState<ModelTrainingResult | null>(null);
   const [modelRuns, setModelRuns] = useState<ModelRun[]>([]);
+  const [reports, setReports] = useState<ProjectReportListItem[]>([]);
+  const [selectedReport, setSelectedReport] = useState<ProjectReport | null>(
+    null,
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [activeWorkbenchTab, setActiveWorkbenchTab] =
@@ -211,6 +363,8 @@ export default function Home() {
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
   const [isTrainingModel, setIsTrainingModel] = useState(false);
   const [isLoadingModelRuns, setIsLoadingModelRuns] = useState(false);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [isSendingChatMessage, setIsSendingChatMessage] = useState(false);
   const [deletingProjectId, setDeletingProjectId] = useState<number | null>(
     null,
@@ -388,6 +542,36 @@ export default function Home() {
     }
   }, []);
 
+  const loadReports = useCallback(async (projectId: number) => {
+    try {
+      setIsLoadingReports(true);
+      const response = await fetch(`${API_BASE_URL}/projects/${projectId}/reports`);
+      if (!response.ok) {
+        throw new Error("Could not load reports.");
+      }
+
+      const reportList = (await response.json()) as ProjectReportListItem[];
+      setReports(reportList);
+      setSelectedReport((currentReport) => {
+        if (
+          currentReport &&
+          reportList.some((report) => report.id === currentReport.id)
+        ) {
+          return currentReport;
+        }
+        return null;
+      });
+    } catch (error) {
+      setReports([]);
+      setSelectedReport(null);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not load reports.",
+      );
+    } finally {
+      setIsLoadingReports(false);
+    }
+  }, []);
+
   useEffect(() => {
     async function loadProjects() {
       try {
@@ -429,6 +613,8 @@ export default function Home() {
     setTargetColumn("");
     setModelTrainingResult(null);
     setModelRuns([]);
+    setReports([]);
+    setSelectedReport(null);
     setChatMessages([]);
     setChatInput("");
     setSuccessMessage(null);
@@ -436,6 +622,8 @@ export default function Home() {
     if (activeProjectId === null) {
       setDatasets([]);
       setDocuments([]);
+      setReports([]);
+      setSelectedReport(null);
       return;
     }
 
@@ -443,12 +631,14 @@ export default function Home() {
     loadDocuments(activeProjectId);
     loadChatHistory(activeProjectId);
     loadModelRuns(activeProjectId);
+    loadReports(activeProjectId);
   }, [
     activeProjectId,
     loadChatHistory,
     loadDatasets,
     loadDocuments,
     loadModelRuns,
+    loadReports,
   ]);
 
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
@@ -770,6 +960,66 @@ export default function Home() {
     }
   }
 
+  async function handleGenerateReport() {
+    if (!activeProjectId) {
+      setErrorMessage("Create or select a project before generating a report.");
+      return;
+    }
+
+    try {
+      setIsGeneratingReport(true);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${activeProjectId}/reports/generate`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        const errorBody = (await response.json().catch(() => null)) as {
+          detail?: string;
+        } | null;
+        throw new Error(errorBody?.detail || "Could not generate report.");
+      }
+
+      const report = (await response.json()) as ProjectReport;
+      setSelectedReport(report);
+      setSuccessMessage(`Generated report #${report.id}.`);
+      await loadReports(activeProjectId);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not generate report.",
+      );
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  }
+
+  async function handleSelectReport(reportId: number) {
+    if (!activeProjectId) {
+      return;
+    }
+
+    try {
+      setIsLoadingReports(true);
+      setErrorMessage(null);
+      const response = await fetch(
+        `${API_BASE_URL}/projects/${activeProjectId}/reports/${reportId}`,
+      );
+      if (!response.ok) {
+        throw new Error("Could not load report.");
+      }
+
+      setSelectedReport((await response.json()) as ProjectReport);
+    } catch (error) {
+      setSelectedReport(null);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not load report.",
+      );
+    } finally {
+      setIsLoadingReports(false);
+    }
+  }
+
   async function handleSendChatMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -828,6 +1078,9 @@ export default function Home() {
       ]);
       await loadChatHistory(activeProjectId);
       await loadModelRuns(activeProjectId);
+      if (result.tool_name === "generate_project_report") {
+        await loadReports(activeProjectId);
+      }
     } catch (error) {
       setChatMessages((currentMessages) => [
         ...currentMessages,
@@ -1072,7 +1325,8 @@ export default function Home() {
 
                     <WorkbenchTabs
                       activeTab={activeWorkbenchTab}
-                      fileCount={datasets.length + documents.length}
+                        fileCount={datasets.length + documents.length}
+                        reportCount={reports.length}
                       onTabChange={setActiveWorkbenchTab}
                     />
 
@@ -1132,6 +1386,17 @@ export default function Home() {
                         selectedDatasetId={selectedModelDatasetId}
                         onTrainModel={handleTrainModel}
                         targetColumn={targetColumn}
+                      />
+                    ) : null}
+
+                    {activeWorkbenchTab === "reports" ? (
+                      <ReportsPanel
+                        isGeneratingReport={isGeneratingReport}
+                        isLoadingReports={isLoadingReports}
+                        onGenerateReport={handleGenerateReport}
+                        onSelectReport={handleSelectReport}
+                        reports={reports}
+                        selectedReport={selectedReport}
                       />
                     ) : null}
                   </div>
@@ -1472,10 +1737,12 @@ function UnifiedUploadPanel({
 function WorkbenchTabs({
   activeTab,
   fileCount,
+  reportCount,
   onTabChange,
 }: {
   activeTab: WorkbenchTab;
   fileCount: number;
+  reportCount: number;
   onTabChange: (tab: WorkbenchTab) => void;
 }) {
   const tabs: Array<{
@@ -1487,6 +1754,7 @@ function WorkbenchTabs({
     { id: "upload", label: "Upload", icon: Upload },
     { id: "files", label: "Files", icon: Files, count: fileCount },
     { id: "model", label: "Model", icon: BarChart3 },
+    { id: "reports", label: "Reports", icon: FileText, count: reportCount },
   ];
 
   return (
@@ -1901,6 +2169,101 @@ function ModelTrainingResults({ result }: { result: ModelTrainingResult }) {
   );
 }
 
+function ReportsPanel({
+  isGeneratingReport,
+  isLoadingReports,
+  onGenerateReport,
+  onSelectReport,
+  reports,
+  selectedReport,
+}: {
+  isGeneratingReport: boolean;
+  isLoadingReports: boolean;
+  onGenerateReport: () => void;
+  onSelectReport: (reportId: number) => void;
+  reports: ProjectReportListItem[];
+  selectedReport: ProjectReport | null;
+}) {
+  return (
+    <div className="grid gap-4 lg:grid-cols-[18rem_1fr]">
+      <Card className="overflow-hidden">
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800 bg-[#131b26] px-4 py-3">
+          <span className="text-xs font-medium text-zinc-500">Reports</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={onGenerateReport}
+            disabled={isGeneratingReport}
+            className="gap-2"
+          >
+            <FileText className="h-4 w-4" />
+            {isGeneratingReport ? "Generating..." : "Generate"}
+          </Button>
+        </div>
+
+        {isLoadingReports ? (
+          <p className="px-4 py-4 text-sm text-zinc-500">Loading reports...</p>
+        ) : reports.length === 0 ? (
+          <p className="px-4 py-4 text-sm leading-6 text-zinc-500">
+            No reports generated yet.
+          </p>
+        ) : (
+          <div className="divide-y divide-zinc-800">
+            {reports.map((report) => {
+              const isSelected = selectedReport?.id === report.id;
+              return (
+                <button
+                  key={report.id}
+                  type="button"
+                  onClick={() => onSelectReport(report.id)}
+                  className={`block w-full px-4 py-3 text-left transition hover:bg-[#151f2b] ${
+                    isSelected ? "bg-[#151f2b]" : ""
+                  }`}
+                >
+                  <span className="block truncate text-sm font-medium text-zinc-100">
+                    {report.title}
+                  </span>
+                  <span className="mt-1 block text-xs text-zinc-500">
+                    #{report.id} - {formatDate(report.created_at)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card className="overflow-hidden">
+        {selectedReport ? (
+          <>
+            <div className="border-b border-zinc-800 bg-[#131b26] px-4 py-3">
+              <h4 className="truncate text-sm font-semibold text-zinc-100">
+                {selectedReport.title}
+              </h4>
+              <p className="mt-1 text-xs text-zinc-500">
+                Report #{selectedReport.id} - {formatDate(selectedReport.created_at)}
+              </p>
+            </div>
+            <pre className="max-h-[34rem] overflow-auto whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-zinc-300">
+              {selectedReport.content_markdown}
+            </pre>
+          </>
+        ) : (
+          <div className="px-5 py-10 text-center">
+            <h4 className="text-base font-semibold text-zinc-100">
+              Select a report
+            </h4>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-500">
+              Generated markdown reports appear here for review.
+            </p>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function ProfileTable({
   columnTypes,
   missingValues,
@@ -2025,6 +2388,52 @@ function AgentToolResultCard({ result }: { result: AgentToolResult }) {
     );
   }
 
+  if (result.tool_name === "execution_plan") {
+    const steps = result.steps_summary || [];
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <BarChart3 className="h-3.5 w-3.5" />
+            Plan trace
+          </span>
+          <Badge>
+            {result.completed_steps ?? steps.filter((step) => step.status === "completed").length}/
+            {steps.length}
+          </Badge>
+        </div>
+        <div className="mt-3 space-y-1">
+          {steps.slice(0, 8).map((step) => (
+            <div
+              key={`${step.step_id}-${step.tool_name}`}
+              className="rounded border border-zinc-800 px-2 py-1"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate font-medium text-zinc-100">
+                  {step.step_id}. {formatToolName(step.tool_name)}
+                </span>
+                <span
+                  className={
+                    step.status === "completed"
+                      ? "text-emerald-300"
+                      : "text-amber-300"
+                  }
+                >
+                  {step.status}
+                </span>
+              </div>
+              {step.result_summary ? (
+                <p className="mt-1 line-clamp-2 text-zinc-500">
+                  {step.result_summary}
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (result.tool_name === "get_dataset_summary") {
     return (
       <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
@@ -2099,6 +2508,459 @@ function AgentToolResultCard({ result }: { result: AgentToolResult }) {
                 </div>
               ))}
           </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "run_batch_reactor_simulation") {
+    const input = result.input || {};
+    const finalYield = result.final_yield ?? 0;
+    const finalImpurity = result.final_impurity ?? 0;
+    const conversion = result.conversion ?? 0;
+    const lastIndex = Math.max(
+      0,
+      Math.min(
+        result.CA_profile?.length ?? 0,
+        result.CB_profile?.length ?? 0,
+        result.CC_profile?.length ?? 0,
+      ) - 1,
+    );
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <FlaskConical className="h-3.5 w-3.5" />
+            Simulation #{result.simulation_run_id ?? "-"}
+          </span>
+          <Badge>{result.simulation_type || "batch reactor"}</Badge>
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Yield</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(finalYield)}
+            </p>
+          </div>
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Impurity</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(finalImpurity)}
+            </p>
+          </div>
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Conversion</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(conversion)}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-zinc-400">
+          <span>{String(input.temperature ?? "-")} C</span>
+          <span>{String(input.batch_time ?? "-")} min</span>
+          <span>CA {formatMetricValue(result.CA_profile?.[lastIndex] ?? 0)}</span>
+          <span>CB {formatMetricValue(result.CB_profile?.[lastIndex] ?? 0)}</span>
+        </div>
+        {result.note ? (
+          <p className="mt-2 text-zinc-500">{result.note}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (
+    result.tool_name === "optimize_batch_reactor" ||
+    result.tool_name === "explain_latest_optimization"
+  ) {
+    const bestInputs = result.best_inputs || {};
+    const topCandidates = result.top_candidates || [];
+    const cardLabel =
+      result.tool_name === "explain_latest_optimization"
+        ? "Optimization explanation"
+        : "Optimization";
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <FlaskConical className="h-3.5 w-3.5" />
+            {cardLabel} #{result.optimization_run_id ?? "-"}
+          </span>
+          <Badge>{result.optimization_type || "batch reactor"}</Badge>
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Yield</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(result.best_final_yield ?? 0)}
+            </p>
+          </div>
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Impurity</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(result.best_final_impurity ?? 0)}
+            </p>
+          </div>
+          <div className="rounded border border-zinc-800 p-2">
+            <p className="text-zinc-500">Objective</p>
+            <p className="mt-1 font-medium text-zinc-100">
+              {formatMetricValue(result.objective_value ?? 0)}
+            </p>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-zinc-400">
+          <span>{String(bestInputs.temperature_c ?? "-")} C</span>
+          <span>{String(bestInputs.batch_time_min ?? "-")} min</span>
+          <span>Initial {String(bestInputs.initial_concentration ?? "-")}</span>
+          <span>Catalyst {String(bestInputs.catalyst_factor ?? "-")}</span>
+        </div>
+        <p className="mt-2 text-zinc-500">
+          {result.feasible_candidates ?? 0} feasible of{" "}
+          {result.evaluated_candidates ?? 0} evaluated candidates.
+        </p>
+        {result.explanation ? (
+          <p className="mt-2 text-zinc-400">{result.explanation}</p>
+        ) : null}
+        {topCandidates.length > 1 ? (
+          <div className="mt-2 space-y-1">
+            {topCandidates.slice(1, 4).map((candidate, index) => (
+              <div
+                key={`${candidate.objective_value}-${index}`}
+                className="flex justify-between gap-3 rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                <span>Candidate {index + 2}</span>
+                <span>
+                  y {formatMetricValue(candidate.final_yield)}, imp{" "}
+                  {formatMetricValue(candidate.final_impurity)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {result.note ? (
+          <p className="mt-2 text-zinc-500">{result.note}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "recommend_next_experiment") {
+    const recommendations = result.recommendations || [];
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <FlaskConical className="h-3.5 w-3.5" />
+            Next experiments
+          </span>
+          <Badge>{result.recommendation_count ?? recommendations.length}</Badge>
+        </div>
+        <div className="mt-3 space-y-2">
+          {recommendations.slice(0, 3).map((recommendation) => (
+            <div
+              key={recommendation.rank}
+              className="rounded border border-zinc-800 p-2"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium text-zinc-100">
+                  Candidate {recommendation.rank}
+                </span>
+                <span className="text-zinc-400">
+                  y {formatMetricValue(recommendation.final_yield)}, imp{" "}
+                  {formatMetricValue(recommendation.final_impurity)}
+                </span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-zinc-400">
+                <span>{String(recommendation.inputs.temperature_c ?? "-")} C</span>
+                <span>{String(recommendation.inputs.batch_time_min ?? "-")} min</span>
+                <span>
+                  Initial{" "}
+                  {String(recommendation.inputs.initial_concentration ?? "-")}
+                </span>
+                <span>
+                  Catalyst {String(recommendation.inputs.catalyst_factor ?? "-")}
+                </span>
+              </div>
+              <p className="mt-2 text-zinc-500">{recommendation.reason}</p>
+            </div>
+          ))}
+        </div>
+        {result.note ? (
+          <p className="mt-2 text-zinc-500">{result.note}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "run_project_analysis_workflow") {
+    const assets = result.current_assets || {};
+    const actions = result.recommended_next_actions || [];
+    const gaps = result.gaps || [];
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <BarChart3 className="h-3.5 w-3.5" />
+            Project analysis #{result.workflow_run_id ?? "-"}
+          </span>
+          <Badge>{result.status || "completed"}</Badge>
+        </div>
+        {result.summary ? (
+          <p className="mt-2 text-zinc-400">{result.summary}</p>
+        ) : null}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {Object.entries(assets).map(([assetName, available]) => (
+            <div
+              key={assetName}
+              className="flex items-center justify-between gap-3 rounded border border-zinc-800 px-2 py-1"
+            >
+              <span className="truncate text-zinc-500">
+                {formatAssetName(assetName)}
+              </span>
+              <span className={available ? "text-emerald-300" : "text-zinc-500"}>
+                {available ? "Ready" : "Missing"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {gaps.length > 0 ? (
+          <p className="mt-2 line-clamp-2 text-zinc-500">
+            Gap: {gaps.slice(0, 2).join("; ")}
+          </p>
+        ) : null}
+        {actions.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {actions.slice(0, 3).map((action, index) => (
+              <div
+                key={`${index}-${action}`}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                {index + 1}. {action}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (
+    result.tool_name === "list_workflow_runs" ||
+    result.tool_name === "explain_latest_workflow" ||
+    result.tool_name === "compare_workflow_runs"
+  ) {
+    const workflowRuns = result.workflow_runs || [];
+    const latestWorkflow =
+      result.latest_workflow ||
+      (result.workflow_run_id
+        ? {
+            workflow_run_id: result.workflow_run_id,
+            workflow_type: result.workflow_type,
+            status: result.status,
+            summary: result.summary,
+            current_assets: result.current_assets,
+            gaps: result.gaps,
+            recommended_next_actions: result.recommended_next_actions,
+          }
+        : null);
+    const previousWorkflow = result.previous_workflow || null;
+    const recommendations =
+      result.workflow_recommendations?.latest ||
+      latestWorkflow?.recommended_next_actions ||
+      result.recommended_next_actions ||
+      [];
+    const changes = result.major_project_changes || [];
+
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <BarChart3 className="h-3.5 w-3.5" />
+            Workflow history
+          </span>
+          <Badge>
+            {result.count ?? (latestWorkflow ? 1 : workflowRuns.length)}
+          </Badge>
+        </div>
+        {result.message ? (
+          <p className="mt-2 text-zinc-500">{result.message}</p>
+        ) : null}
+        {latestWorkflow ? (
+          <div className="mt-3 rounded border border-zinc-800 p-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium text-zinc-100">
+                Run #{latestWorkflow.workflow_run_id ?? "-"}
+              </span>
+              <span className="text-zinc-500">
+                {latestWorkflow.status || "workflow"}
+              </span>
+            </div>
+            {latestWorkflow.summary ? (
+              <p className="mt-2 text-zinc-400">{latestWorkflow.summary}</p>
+            ) : null}
+          </div>
+        ) : null}
+        {previousWorkflow ? (
+          <p className="mt-2 text-zinc-500">
+            Compared with run #{previousWorkflow.workflow_run_id ?? "-"}.
+          </p>
+        ) : null}
+        {workflowRuns.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {workflowRuns.slice(0, 5).map((workflowRun) => (
+              <div
+                key={workflowRun.workflow_run_id}
+                className="rounded border border-zinc-800 px-2 py-1"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-zinc-100">
+                    Run #{workflowRun.workflow_run_id ?? "-"}
+                  </span>
+                  <span className="text-zinc-500">
+                    {workflowRun.status || "-"}
+                  </span>
+                </div>
+                {workflowRun.summary ? (
+                  <p className="mt-1 line-clamp-2 text-zinc-500">
+                    {workflowRun.summary}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {changes.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {changes.slice(0, 4).map((change) => (
+              <div
+                key={`${change.asset}-${change.change}`}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                {formatAssetName(change.asset)}:{" "}
+                {change.change === "became_available" ? "Ready" : "Missing"}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {recommendations.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {recommendations.slice(0, 3).map((action, index) => (
+              <div
+                key={`${index}-${action}`}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                {index + 1}. {action}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (result.tool_name === "generate_project_report") {
+    const nextSteps = result.recommended_next_steps || [];
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <FileText className="h-3.5 w-3.5" />
+            Report #{result.report_id ?? "-"}
+          </span>
+          <Badge>{result.report_type || "report"}</Badge>
+        </div>
+        {result.title ? (
+          <p className="mt-2 text-zinc-400">{result.title}</p>
+        ) : null}
+        {nextSteps.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {nextSteps.slice(0, 3).map((step, index) => (
+              <div
+                key={`${index}-${step}`}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                {index + 1}. {step}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (
+    result.tool_name === "review_latest_report" ||
+    result.tool_name === "explain_latest_report" ||
+    result.tool_name === "list_reports"
+  ) {
+    const reports = result.reports || [];
+    const strengths = result.strengths || [];
+    const missingSections = result.missing_sections || [];
+    const suggestedEdits = result.suggested_edits || [];
+    const limitations = result.limitations || [];
+    const sections = result.sections || [];
+    return (
+      <div className="mt-3 rounded-md border border-zinc-700 bg-[#0d141d] p-3 text-xs text-zinc-300">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 font-medium text-zinc-100">
+            <FileText className="h-3.5 w-3.5" />
+            {result.tool_name === "list_reports"
+              ? "Reports"
+              : `Report #${result.report_id ?? "-"}`}
+          </span>
+          <Badge>{result.report_type || result.count || "review"}</Badge>
+        </div>
+        {result.message ? (
+          <p className="mt-2 text-zinc-500">{result.message}</p>
+        ) : null}
+        {result.summary ? (
+          <p className="mt-2 text-zinc-400">{result.summary}</p>
+        ) : null}
+        {reports.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {reports.slice(0, 5).map((report) => (
+              <div
+                key={report.report_id}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                #{report.report_id ?? "-"} {report.title || "Untitled report"}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {sections.length > 0 ? (
+          <p className="mt-2 line-clamp-2 text-zinc-500">
+            Sections: {sections.slice(0, 8).join(", ")}
+          </p>
+        ) : null}
+        {strengths.length > 0 ? (
+          <p className="mt-2 text-zinc-400">
+            Strength: {strengths.slice(0, 2).join("; ")}
+          </p>
+        ) : null}
+        <p className="mt-2 text-zinc-500">
+          Missing sections:{" "}
+          {missingSections.length > 0 ? missingSections.join(", ") : "none"}
+        </p>
+        {suggestedEdits.length > 0 ? (
+          <div className="mt-3 space-y-1">
+            {suggestedEdits.slice(0, 4).map((edit, index) => (
+              <div
+                key={`${index}-${edit}`}
+                className="rounded border border-zinc-800 px-2 py-1 text-zinc-400"
+              >
+                {index + 1}. {edit}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {limitations.length > 0 ? (
+          <p className="mt-2 line-clamp-2 text-zinc-500">
+            Limitations: {limitations.slice(0, 3).join("; ")}
+          </p>
         ) : null}
       </div>
     );
@@ -2220,6 +3082,19 @@ function formatMetricName(value: string) {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function formatAssetName(value: string) {
+  return value
+    .replace("_available", "")
+    .replace(/_/g, " ")
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function formatToolName(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 function formatMetricValue(value: number) {

@@ -1,0 +1,2 @@
+"""Deterministic project report generation."""
+

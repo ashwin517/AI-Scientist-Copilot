@@ -5,12 +5,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Document
 from app.schemas.document import DocumentRead
+from app.services.id_reset import reset_empty_id_sequences
+from app.services.memory_service import delete_memory, update_project_summary, upsert_memory
 
 
 ALLOWED_DOCUMENT_TYPES = {
@@ -58,6 +60,32 @@ def save_uploaded_document(
     db.add(document)
     db.commit()
     db.refresh(document)
+    document_count = _project_document_count(db, project_id)
+    upsert_memory(
+        db,
+        project_id,
+        "latest_document_id",
+        document.id,
+        memory_type="document",
+        source="document_upload",
+    )
+    upsert_memory(
+        db,
+        project_id,
+        "latest_document_filename",
+        document.filename,
+        memory_type="document",
+        source="document_upload",
+    )
+    upsert_memory(
+        db,
+        project_id,
+        "document_count",
+        document_count,
+        memory_type="document",
+        source="document_upload",
+    )
+    update_project_summary(db, project_id)
     logger.info(
         "document uploaded project_id=%s document_id=%s filename=%s mime_type=%s file_size=%s has_extracted_text=%s",
         project_id,
@@ -90,6 +118,9 @@ def delete_document(db: Session, document: Document) -> None:
     ]
     db.delete(document)
     db.commit()
+    _sync_document_memory_after_delete(db, document.project_id)
+    reset_empty_id_sequences(db, [Document.__tablename__])
+    db.commit()
 
     for file_path in file_paths:
         if file_path is None:
@@ -98,6 +129,42 @@ def delete_document(db: Session, document: Document) -> None:
             file_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _sync_document_memory_after_delete(db: Session, project_id: int) -> None:
+    documents = list_project_documents(db, project_id)
+    document_count = len(documents)
+    upsert_memory(
+        db,
+        project_id,
+        "document_count",
+        document_count,
+        memory_type="document",
+        source="document_delete",
+    )
+    if documents:
+        latest_document = documents[0]
+        upsert_memory(
+            db,
+            project_id,
+            "latest_document_id",
+            latest_document.id,
+            memory_type="document",
+            source="document_delete",
+        )
+        upsert_memory(
+            db,
+            project_id,
+            "latest_document_filename",
+            latest_document.filename,
+            memory_type="document",
+            source="document_delete",
+        )
+        return
+
+    delete_memory(db, project_id, "latest_document_id")
+    delete_memory(db, project_id, "latest_document_filename")
+    update_project_summary(db, project_id)
 
 
 def ensure_document_text_extracted(db: Session, document: Document) -> str | None:
@@ -173,3 +240,10 @@ def _safe_filename(filename: str) -> str:
     name = Path(filename).name.strip() or "uploaded-document"
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", name)
     return name[:255] or "uploaded-document"
+
+
+def _project_document_count(db: Session, project_id: int) -> int:
+    result = db.execute(
+        select(func.count()).select_from(Document).where(Document.project_id == project_id)
+    )
+    return int(result.scalar_one())

@@ -27,6 +27,7 @@ from app.services.documents import (
     list_project_documents,
     save_uploaded_document,
 )
+from app.services.memory_service import update_project_summary
 from app.services.projects import get_project
 
 
@@ -58,6 +59,7 @@ def upload_project_document_route(
         ) from exc
 
     processing = process_document(db, document)
+    update_project_summary(db, project_id)
 
     return DocumentUploadResult(
         document=document_to_read_data(document),
@@ -280,6 +282,7 @@ def process_project_document_route(
         )
 
     processing = process_document(db, document)
+    update_project_summary(db, project_id)
     return DocumentProcessingRead(**processing.__dict__)
 
 

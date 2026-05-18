@@ -9,8 +9,13 @@ from app.routes.chat import router as chat_router
 from app.routes.datasets import router as datasets_router
 from app.routes.documents import router as documents_router
 from app.routes.health import router as health_router
+from app.routes.memory import router as memory_router
 from app.routes.models import router as models_router
+from app.routes.optimization import router as optimization_router
 from app.routes.projects import router as projects_router
+from app.routes.reports import router as reports_router
+from app.routes.simulation import router as simulation_router
+from app.routes.workflows import router as workflows_router
 
 
 @asynccontextmanager
@@ -41,4 +46,9 @@ app.include_router(projects_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
 app.include_router(models_router)
+app.include_router(memory_router)
+app.include_router(simulation_router)
+app.include_router(optimization_router)
+app.include_router(workflows_router)
+app.include_router(reports_router)
 app.include_router(chat_router)

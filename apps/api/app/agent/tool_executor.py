@@ -1,3 +1,5 @@
+import inspect
+
 from sqlalchemy.orm import Session
 
 from app.agent.tool_registry import ToolRegistry
@@ -13,6 +15,7 @@ class ToolExecutor:
         db: Session,
         project_id: int | None,
         intent: ToolIntent,
+        project_memory: dict[str, object] | None = None,
     ) -> ToolResult:
         if not intent.requires_tool or not intent.tool_name:
             return ToolResult(
@@ -37,7 +40,10 @@ class ToolExecutor:
             )
 
         try:
-            data = tool.handler(db=db, project_id=project_id, **intent.arguments)
+            arguments = dict(intent.arguments)
+            if _accepts_project_memory(tool.handler):
+                arguments["project_memory"] = project_memory or {}
+            data = tool.handler(db=db, project_id=project_id, **arguments)
         except TypeError as exc:
             return ToolResult(
                 tool_name=tool.name,
@@ -53,3 +59,6 @@ class ToolExecutor:
 
         return ToolResult(tool_name=tool.name, success=True, data=data)
 
+
+def _accepts_project_memory(handler: object) -> bool:
+    return "project_memory" in inspect.signature(handler).parameters

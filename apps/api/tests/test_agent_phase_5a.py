@@ -10,6 +10,7 @@ import requests
 from app.agent.agent_service import AgentService
 from app.agent.intent_parser import IntentParser
 from app.agent.pending_action import get_pending_action
+from app.agent.planner import create_execution_plan
 from app.agent.tools.document_tools import (
     DOCUMENT_NOT_PROCESSED_MESSAGE,
     EMBEDDINGS_MISSING_MESSAGE,
@@ -18,6 +19,12 @@ from app.agent.tools.document_tools import (
     answer_document_question as answer_document_question_tool,
 )
 from app.agent.tools.model_tools import train_baseline_model
+from app.agent.tools.optimization_tools import optimize_batch_reactor
+from app.agent.tools.simulation_tools import (
+    compare_simulation_runs,
+    explain_latest_simulation,
+    run_batch_reactor_simulation,
+)
 from app.agent.tool_executor import ToolExecutor
 from app.agent.tool_registry import ToolRegistry
 from app.agent.tool_schemas import ToolIntent
@@ -32,11 +39,34 @@ from app.ai.retrieval_service import (
     retrieve_relevant_chunks,
 )
 from app.db.base import Base
-from app.db.models import Dataset, Document, DocumentChunk, ModelRun, Project
+from app.db.models import (
+    Dataset,
+    Document,
+    DocumentChunk,
+    ModelRun,
+    Project,
+    ProjectMemory,
+    SimulationRun,
+    OptimizationRun,
+)
 from app.db.session import get_db
 from app.routes.datasets import router as datasets_router
 from app.routes.documents import router as documents_router
+from app.routes.memory import router as memory_router
 from app.routes.models import router as models_router
+from app.routes.optimization import router as optimization_router
+from app.routes.projects import router as projects_router
+from app.routes.simulation import router as simulation_router
+from app.simulation.batch_reactor import simulate_batch_reactor
+from app.simulation.schemas import BatchReactorSimulationInput
+from app.optimization.batch_reactor_optimizer import optimize_batch_reactor_grid
+from app.optimization.schemas import BatchReactorOptimizationInput
+from app.services.memory_service import (
+    get_memory,
+    list_memory,
+    update_project_summary,
+    upsert_memory,
+)
 from app.services.document_chunks import process_document, split_text_into_chunks
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -82,6 +112,97 @@ class IntentParserTests(unittest.TestCase):
         self.assertTrue(intent.requires_tool)
         self.assertEqual(intent.tool_name, "answer_document_question")
 
+    def test_detects_list_project_memory(self) -> None:
+        intent = self.parser.parse("what do you remember about this project?")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "list_project_memory")
+
+    def test_detects_remember_project_fact(self) -> None:
+        intent = self.parser.parse(
+            "remember that this project is about batch reactor yield optimization"
+        )
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "upsert_project_memory")
+        self.assertEqual(intent.arguments["key"], "project_domain_note")
+        self.assertEqual(
+            intent.arguments["value"],
+            "this project is about batch reactor yield optimization",
+        )
+
+    def test_detects_forget_project_memory(self) -> None:
+        intent = self.parser.parse("forget the target column")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "delete_project_memory")
+        self.assertEqual(intent.arguments["label"], "target column")
+
+    def test_detects_set_selected_target_column(self) -> None:
+        intent = self.parser.parse("use yield_pct as the target column from now on")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "upsert_project_memory")
+        self.assertEqual(intent.arguments["key"], "selected_target_column")
+        self.assertEqual(intent.arguments["value"], "yield_pct")
+        self.assertTrue(intent.arguments["validate_target_column"])
+
+    def test_detects_explain_latest_model(self) -> None:
+        intent = self.parser.parse("what are the important features?")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "explain_latest_model")
+
+    def test_detects_batch_reactor_simulation(self) -> None:
+        intent = self.parser.parse("what if temperature is 85C for 120 minutes")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "run_batch_reactor_simulation")
+        self.assertEqual(intent.arguments["temperature"], 85.0)
+        self.assertEqual(intent.arguments["batch_time"], 120.0)
+
+    def test_detects_simulation_history(self) -> None:
+        intent = self.parser.parse("show my simulation history")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "list_simulation_runs")
+
+    def test_detects_explain_latest_simulation(self) -> None:
+        intent = self.parser.parse("explain the latest simulation")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "explain_latest_simulation")
+
+    def test_detects_compare_last_two_simulations(self) -> None:
+        intent = self.parser.parse("compare the last two simulations")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "compare_simulation_runs")
+
+    def test_detects_impurity_increase_question(self) -> None:
+        intent = self.parser.parse("why did impurity increase?")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "compare_simulation_runs")
+
+    def test_detects_batch_reactor_optimization(self) -> None:
+        intent = self.parser.parse("maximize yield while limiting impurity")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "optimize_batch_reactor")
+
+    def test_detects_latest_optimization_explanation(self) -> None:
+        intent = self.parser.parse("explain the latest optimization")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "explain_latest_optimization")
+
+    def test_detects_next_experiment_recommendation(self) -> None:
+        intent = self.parser.parse("what experiment should I run next?")
+
+        self.assertTrue(intent.requires_tool)
+        self.assertEqual(intent.tool_name, "recommend_next_experiment")
+
 
 class ToolExecutorTests(unittest.TestCase):
     def test_rejects_unknown_tools(self) -> None:
@@ -111,9 +232,442 @@ class ToolRegistryTests(unittest.TestCase):
                 "show_missing_values",
                 "train_baseline_model",
                 "list_model_runs",
+                "explain_latest_model",
                 "answer_document_question",
+                "list_project_memory",
+                "upsert_project_memory",
+                "delete_project_memory",
+                "run_batch_reactor_simulation",
+                "list_simulation_runs",
+                "explain_latest_simulation",
+                "compare_simulation_runs",
+                "optimize_batch_reactor",
+                "explain_latest_optimization",
+                "list_optimization_runs",
+                "recommend_next_experiment",
+                "run_project_analysis_workflow",
+                "list_workflow_runs",
+                "explain_latest_workflow",
+                "compare_workflow_runs",
+                "generate_project_report",
+                "list_reports",
+                "explain_latest_report",
+                "review_latest_report",
             },
         )
+
+
+class PlannerTests(unittest.TestCase):
+    def test_create_execution_plan_for_project_analysis_uses_registry_tools(self) -> None:
+        registry = ToolRegistry()
+
+        plan = create_execution_plan(
+            "Analyze my project and suggest next experiments",
+            {"latest_optimization_run_id": 1},
+            registry=registry,
+        )
+
+        self.assertGreaterEqual(len(plan), 3)
+        self.assertLessEqual(len(plan), 8)
+        self.assertEqual(plan[0].tool_name, "list_project_memory")
+        self.assertIn("recommend_next_experiment", [step.tool_name for step in plan])
+        self.assertTrue(all(registry.get(step.tool_name) for step in plan))
+        self.assertTrue(all(step.status == "pending" for step in plan))
+
+    def test_create_execution_plan_ignores_single_tool_requests(self) -> None:
+        plan = create_execution_plan(
+            "summarize my dataset",
+            {},
+            registry=ToolRegistry(),
+        )
+
+        self.assertEqual(plan, [])
+
+
+class ProjectMemoryServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_factory()
+        self.project = Project(name="Memory project")
+        self.db.add(self.project)
+        self.db.commit()
+        self.db.refresh(self.project)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.engine.dispose()
+
+    def test_memory_upsert_updates_existing_key(self) -> None:
+        first = upsert_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_id",
+            1,
+            memory_type="dataset",
+            source="dataset_upload",
+        )
+        second = upsert_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_id",
+            2,
+            memory_type="dataset",
+            source="dataset_upload",
+        )
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(self.db.query(ProjectMemory).count(), 1)
+        latest_dataset = get_memory(self.db, self.project.id, "latest_dataset_id")
+        self.assertEqual(latest_dataset.value_json, "2")
+
+    def test_memory_retrieval_is_project_scoped(self) -> None:
+        other_project = Project(name="Other memory project")
+        self.db.add(other_project)
+        self.db.commit()
+        self.db.refresh(other_project)
+        upsert_memory(self.db, self.project.id, "selected_target_column", "yield")
+        upsert_memory(self.db, other_project.id, "selected_target_column", "quality")
+
+        memories = list_memory(self.db, self.project.id)
+
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0].project_id, self.project.id)
+        self.assertEqual(memories[0].value_json, '"yield"')
+
+    def test_empty_project_summary_uses_empty_message(self) -> None:
+        summary = update_project_summary(self.db, self.project.id)
+
+        self.assertEqual(summary, "No project summary has been created yet.")
+        memory = get_memory(self.db, self.project.id, "project_summary")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory.value_json, '"No project summary has been created yet."')
+
+
+class ProjectMemoryRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_factory()
+        self.project = Project(name="Memory route project")
+        self.db.add(self.project)
+        self.db.commit()
+        self.db.refresh(self.project)
+
+        app = FastAPI()
+        app.include_router(memory_router)
+
+        def override_get_db():
+            db = self.session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.engine.dispose()
+
+    def test_list_and_delete_project_memory(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "project_domain_note",
+            "batch reactor yield optimization",
+            memory_type="project_note",
+            source="test",
+        )
+
+        list_response = self.client.get(f"/projects/{self.project.id}/memory")
+        delete_response = self.client.delete(
+            f"/projects/{self.project.id}/memory/project_domain_note"
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        memory_by_key = {item["key"]: item for item in list_response.json()}
+        self.assertEqual(
+            memory_by_key["project_domain_note"]["value"],
+            "batch reactor yield optimization",
+        )
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertIsNone(get_memory(self.db, self.project.id, "project_domain_note"))
+
+
+class BatchReactorSimulationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_factory()
+        self.project = Project(name="Simulation project")
+        self.db.add(self.project)
+        self.db.commit()
+        self.db.refresh(self.project)
+
+        app = FastAPI()
+        app.include_router(simulation_router)
+
+        def override_get_db():
+            db = self.session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.engine.dispose()
+
+    def test_ode_simulation_returns_valid_profiles(self) -> None:
+        result = simulate_batch_reactor(
+            BatchReactorSimulationInput(
+                temperature=85,
+                batch_time=120,
+                initial_concentration=1.0,
+                catalyst_factor=1.0,
+            )
+        )
+
+        self.assertEqual(len(result.time_grid), len(result.CA_profile))
+        self.assertEqual(len(result.time_grid), len(result.CB_profile))
+        self.assertEqual(len(result.time_grid), len(result.CC_profile))
+        self.assertGreater(len(result.time_grid), 2)
+        self.assertGreaterEqual(result.final_yield, 0.0)
+        self.assertGreaterEqual(result.final_impurity, 0.0)
+        self.assertGreaterEqual(result.conversion, 0.0)
+
+    def test_simulation_run_is_persisted(self) -> None:
+        response = self.client.post(
+            f"/projects/{self.project.id}/simulation/batch-reactor",
+            json={
+                "temperature": 85,
+                "batch_time": 120,
+                "initial_concentration": 1.0,
+                "catalyst_factor": 1.0,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["simulation_type"], "batch_reactor")
+        self.assertGreaterEqual(body["final_yield"], 0.0)
+        self.assertEqual(self.db.query(SimulationRun).count(), 1)
+        simulation_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_simulation_run_id",
+        )
+        simulation_type_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_simulation_type",
+        )
+        self.assertIsNotNone(simulation_memory)
+        self.assertIsNotNone(simulation_type_memory)
+        self.assertEqual(simulation_memory.value_json, str(body["simulation_run_id"]))
+        self.assertEqual(simulation_type_memory.value_json, '"batch_reactor"')
+
+    def test_latest_simulation_can_be_explained(self) -> None:
+        run_batch_reactor_simulation(
+            self.db,
+            self.project.id,
+            temperature=85,
+            batch_time=120,
+        )
+
+        explanation = explain_latest_simulation(self.db, self.project.id)
+
+        self.assertTrue(explanation["simulation_available"])
+        self.assertEqual(explanation["simulation_type"], "batch_reactor")
+        self.assertIn("interpretation", explanation)
+        self.assertIn("not calibrated for real chemistry", explanation["model_note"])
+
+    def test_last_two_simulations_can_be_compared(self) -> None:
+        run_batch_reactor_simulation(
+            self.db,
+            self.project.id,
+            temperature=80,
+            batch_time=120,
+        )
+        run_batch_reactor_simulation(
+            self.db,
+            self.project.id,
+            temperature=90,
+            batch_time=120,
+        )
+
+        comparison = compare_simulation_runs(self.db, self.project.id)
+
+        self.assertTrue(comparison["comparison_available"])
+        self.assertEqual(comparison["candidate"]["input"]["temperature"], 90)
+        self.assertEqual(comparison["baseline"]["input"]["temperature"], 80)
+        self.assertIn("temperature", comparison["input_differences"])
+        self.assertIn("final_yield", comparison["result_differences"])
+
+    def test_no_simulation_gives_clean_message(self) -> None:
+        explanation = explain_latest_simulation(self.db, self.project.id)
+        comparison = compare_simulation_runs(self.db, self.project.id)
+
+        self.assertFalse(explanation["simulation_available"])
+        self.assertIn("No simulation runs are saved", explanation["message"])
+        self.assertFalse(comparison["comparison_available"])
+        self.assertIn("No simulation runs are saved", comparison["message"])
+
+
+class BatchReactorOptimizationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(bind=self.engine)
+        self.db: Session = self.session_factory()
+        self.project = Project(name="Optimization project")
+        self.db.add(self.project)
+        self.db.commit()
+        self.db.refresh(self.project)
+
+        app = FastAPI()
+        app.include_router(optimization_router)
+
+        def override_get_db():
+            db = self.session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.engine.dispose()
+
+    def test_grid_optimizer_returns_best_candidate(self) -> None:
+        result = optimize_batch_reactor_grid(_small_optimization_input())
+
+        self.assertGreater(result.evaluated_candidates, 0)
+        self.assertGreaterEqual(result.best_final_yield, 0.0)
+        self.assertLessEqual(result.best_final_impurity, 1.0)
+        self.assertIn("temperature_c", result.best_inputs)
+        self.assertGreaterEqual(len(result.top_candidates), 1)
+
+    def test_optimization_run_is_persisted(self) -> None:
+        response = self.client.post(
+            f"/projects/{self.project.id}/optimization/batch-reactor",
+            json=_small_optimization_input().model_dump(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["optimization_type"], "batch_reactor")
+        self.assertIn("best_inputs", body)
+        self.assertGreaterEqual(body["best_final_yield"], 0.0)
+        self.assertEqual(self.db.query(OptimizationRun).count(), 1)
+        optimization_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_optimization_run_id",
+        )
+        optimization_type_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_optimization_type",
+        )
+        self.assertIsNotNone(optimization_memory)
+        self.assertIsNotNone(optimization_type_memory)
+        self.assertEqual(optimization_memory.value_json, str(body["optimization_run_id"]))
+        self.assertEqual(optimization_type_memory.value_json, '"batch_reactor"')
+
+    def test_agent_routes_optimization_request(self) -> None:
+        result = optimize_batch_reactor(self.db, self.project.id)
+
+        self.assertIn("best_inputs", result)
+        self.assertEqual(result["optimization_type"], "batch_reactor")
+        self.assertEqual(self.db.query(OptimizationRun).count(), 1)
+
+
+def _small_optimization_input() -> BatchReactorOptimizationInput:
+    return BatchReactorOptimizationInput(
+        search_space={
+            "temperature_c": {"min": 70.0, "max": 80.0, "steps": 2},
+            "batch_time_min": {"min": 30.0, "max": 60.0, "steps": 2},
+            "initial_concentration": {"min": 0.5, "max": 1.0, "steps": 2},
+            "catalyst_factor": {"min": 0.5, "max": 1.0, "steps": 2},
+        },
+        top_k=3,
+    )
+
+
+class ProjectDeleteIdResetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(bind=self.engine)
+
+        app = FastAPI()
+        app.include_router(projects_router)
+
+        def override_get_db():
+            db = self.session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        self.engine.dispose()
+
+    def test_project_id_resets_after_all_projects_are_deleted(self) -> None:
+        first = self.client.post("/projects", json={"name": "First"})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["id"], 1)
+
+        delete_response = self.client.delete("/projects/1")
+        self.assertEqual(delete_response.status_code, 204)
+
+        second = self.client.post("/projects", json={"name": "Second"})
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json()["id"], 1)
+
+    def test_project_id_does_not_reset_while_projects_remain(self) -> None:
+        first = self.client.post("/projects", json={"name": "First"})
+        second = self.client.post("/projects", json={"name": "Second"})
+        self.assertEqual(first.json()["id"], 1)
+        self.assertEqual(second.json()["id"], 2)
+
+        delete_response = self.client.delete("/projects/1")
+        self.assertEqual(delete_response.status_code, 204)
+
+        third = self.client.post("/projects", json={"name": "Third"})
+        self.assertEqual(third.status_code, 201)
+        self.assertEqual(third.json()["id"], 3)
 
 
 class TrainBaselineModelToolTests(unittest.TestCase):
@@ -265,6 +819,22 @@ class DatasetUploadRouteTests(unittest.TestCase):
         datasets = self.db.query(Dataset).filter_by(project_id=self.project.id).all()
         self.assertEqual(len(datasets), 1)
         self.assertEqual(datasets[0].filename, "test.csv")
+        memory = get_memory(self.db, self.project.id, "latest_dataset_id")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory.value_json, str(datasets[0].id))
+        filename_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_filename",
+        )
+        count_memory = get_memory(self.db, self.project.id, "dataset_count")
+        self.assertIsNotNone(filename_memory)
+        self.assertIsNotNone(count_memory)
+        self.assertEqual(filename_memory.value_json, '"test.csv"')
+        self.assertEqual(count_memory.value_json, "1")
+        summary_memory = get_memory(self.db, self.project.id, "project_summary")
+        self.assertIsNotNone(summary_memory)
+        self.assertIn("test.csv", summary_memory.value_json)
 
 
 class DocumentRouteTests(unittest.TestCase):
@@ -336,6 +906,22 @@ class DocumentRouteTests(unittest.TestCase):
         documents = self.db.query(Document).filter_by(project_id=self.project.id).all()
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0].filename, "notes.txt")
+        memory = get_memory(self.db, self.project.id, "latest_document_id")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory.value_json, str(documents[0].id))
+        filename_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_document_filename",
+        )
+        count_memory = get_memory(self.db, self.project.id, "document_count")
+        self.assertIsNotNone(filename_memory)
+        self.assertIsNotNone(count_memory)
+        self.assertEqual(filename_memory.value_json, '"notes.txt"')
+        self.assertEqual(count_memory.value_json, "1")
+        summary_memory = get_memory(self.db, self.project.id, "project_summary")
+        self.assertIsNotNone(summary_memory)
+        self.assertIn("notes.txt", summary_memory.value_json)
         chunks = self.db.query(DocumentChunk).filter_by(document_id=documents[0].id).all()
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].project_id, self.project.id)
@@ -907,6 +1493,19 @@ class ModelTrainingRouteTests(unittest.TestCase):
         self.assertIsNotNone(body["model_run_id"])
         self.assertEqual(body["dataset_id"], self.dataset.id)
         self.assertEqual(self.db.query(ModelRun).count(), 1)
+        model_memory = get_memory(self.db, self.project.id, "latest_model_run_id")
+        target_memory = get_memory(self.db, self.project.id, "selected_target_column")
+        task_memory = get_memory(self.db, self.project.id, "latest_task_type")
+        self.assertIsNotNone(model_memory)
+        self.assertIsNotNone(target_memory)
+        self.assertIsNotNone(task_memory)
+        self.assertEqual(model_memory.value_json, str(body["model_run_id"]))
+        self.assertEqual(target_memory.value_json, '"yield"')
+        self.assertEqual(task_memory.value_json, '"regression"')
+        summary_memory = get_memory(self.db, self.project.id, "project_summary")
+        self.assertIsNotNone(summary_memory)
+        self.assertIn(f"#{body['model_run_id']}", summary_memory.value_json)
+        self.assertIn("RandomForestRegressor regression", summary_memory.value_json)
 
     def test_transient_training_endpoint_still_works(self) -> None:
         response = self.client.post(
@@ -975,6 +1574,308 @@ class PendingActionAgentTests(unittest.TestCase):
         self.assertIsNotNone(pending_action)
         self.assertEqual(pending_action.tool_name, "train_baseline_model")
 
+    def test_multi_step_project_analysis_executes_plan_trace(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "Analyze my project and suggest next experiments",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertTrue(response.plan_executed)
+        self.assertEqual(response.tool_name, "execution_plan")
+        self.assertIsNotNone(response.steps_summary)
+        self.assertGreaterEqual(len(response.steps_summary), 3)
+        self.assertLessEqual(len(response.steps_summary), 8)
+        self.assertIn("list_project_memory", response.tools_used)
+        self.assertIn("get_dataset_summary", response.tools_used)
+        self.assertIn("I did not train models", response.reply)
+        self.assertEqual(self.db.query(SimulationRun).count(), 0)
+        self.assertEqual(self.db.query(OptimizationRun).count(), 0)
+
+    def test_list_memory_intent_returns_project_memory(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "project_domain_note",
+            "batch reactor yield optimization",
+            memory_type="project_note",
+            source="test",
+        )
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "what do you remember about this project?",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "list_project_memory")
+        self.assertIn("project_domain_note", response.reply)
+        self.assertIn("batch reactor yield optimization", response.reply)
+
+    def test_list_memory_formats_non_model_context(self) -> None:
+        document = Document(
+            project_id=self.project.id,
+            filename="test_paper_batch_yield.pdf",
+            file_path="test_paper_batch_yield.pdf",
+            mime_type="application/pdf",
+            file_size=100,
+            extracted_text_path=None,
+        )
+        self.db.add(document)
+        self.db.commit()
+        self.db.refresh(document)
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "what do you remember about this project?",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "list_project_memory")
+        self.assertIn("I currently remember:", response.reply)
+        self.assertIn("Latest document: test_paper_batch_yield.pdf", response.reply)
+        self.assertIn("Documents uploaded: 1", response.reply)
+        self.assertIn("Latest dataset: pending.csv", response.reply)
+        self.assertIn("No trained models yet", response.reply)
+
+    def test_list_memory_syncs_existing_document_from_previous_session(self) -> None:
+        document = Document(
+            project_id=self.project.id,
+            filename="test_paper_batch_yield.pdf",
+            file_path="test_paper_batch_yield.pdf",
+            mime_type="application/pdf",
+            file_size=100,
+            extracted_text_path=None,
+        )
+        self.db.add(document)
+        self.db.commit()
+        self.db.refresh(document)
+        self.assertIsNone(get_memory(self.db, self.project.id, "latest_document_id"))
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "what do you remember about this project?",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "list_project_memory")
+        self.assertIn("Latest document: test_paper_batch_yield.pdf", response.reply)
+        self.assertIn("Documents uploaded: 1", response.reply)
+        synced_memory = get_memory(self.db, self.project.id, "latest_document_filename")
+        self.assertIsNotNone(synced_memory)
+        self.assertEqual(synced_memory.value_json, '"test_paper_batch_yield.pdf"')
+
+    def test_remember_fact_creates_project_memory(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "remember that this project is about batch reactor yield optimization",
+        )
+
+        memory = get_memory(self.db, self.project.id, "project_domain_note")
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "upsert_project_memory")
+        self.assertIsNotNone(memory)
+        self.assertEqual(
+            memory.value_json,
+            '"this project is about batch reactor yield optimization"',
+        )
+        self.assertIn("I will remember", response.reply)
+        summary_memory = get_memory(self.db, self.project.id, "project_summary")
+        self.assertIsNotNone(summary_memory)
+        self.assertIn(
+            "this project is about batch reactor yield optimization",
+            summary_memory.value_json,
+        )
+
+    def test_forget_target_deletes_selected_target_column(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+            "yield",
+            memory_type="user_decision",
+            source="test",
+        )
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "forget the target column",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "delete_project_memory")
+        self.assertIsNone(get_memory(self.db, self.project.id, "selected_target_column"))
+        self.assertIn("I forgot selected_target_column", response.reply)
+
+    def test_forget_ambiguous_memory_asks_clarification(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "forget that",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "delete_project_memory")
+        self.assertIn("Which project memory should I forget?", response.reply)
+
+    def test_set_target_column_validates_and_updates_memory(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "use yield as the target column from now on",
+        )
+
+        memory = get_memory(self.db, self.project.id, "selected_target_column")
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "upsert_project_memory")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory.value_json, '"yield"')
+        self.assertIn("I will use yield as the target column from now on", response.reply)
+
+    def test_agent_routes_simulation_request(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "simulate yield at 90C for 120 minutes",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "run_batch_reactor_simulation")
+        self.assertEqual(response.tool_result["simulation_type"], "batch_reactor")
+        self.assertEqual(response.tool_result["input"]["temperature"], 90.0)
+        self.assertEqual(response.tool_result["input"]["batch_time"], 120.0)
+        self.assertGreaterEqual(response.tool_result["final_yield"], 0.0)
+        self.assertEqual(self.db.query(SimulationRun).count(), 1)
+
+    def test_set_target_column_finds_column_in_non_active_dataset(self) -> None:
+        yield_dataset = Dataset(
+            project_id=self.project.id,
+            filename="yield_dataset.csv",
+            row_count=6,
+            column_count=3,
+            raw_data_json=json.dumps(
+                [
+                    {"run_id": 1, "temperature": 20, "yield_pct": 80},
+                    {"run_id": 2, "temperature": 21, "yield_pct": 82},
+                    {"run_id": 3, "temperature": 22, "yield_pct": 83},
+                    {"run_id": 4, "temperature": 23, "yield_pct": 84},
+                    {"run_id": 5, "temperature": 24, "yield_pct": 85},
+                    {"run_id": 6, "temperature": 25, "yield_pct": 86},
+                ]
+            ),
+        )
+        self.db.add(yield_dataset)
+        self.db.commit()
+        self.db.refresh(yield_dataset)
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_id",
+            self.dataset.id,
+            memory_type="dataset",
+            source="test",
+        )
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "use yield_pct as the target column from now on",
+        )
+
+        target_memory = get_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+        )
+        dataset_memory = get_memory(self.db, self.project.id, "latest_dataset_id")
+        filename_memory = get_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_filename",
+        )
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "upsert_project_memory")
+        self.assertEqual(target_memory.value_json, '"yield_pct"')
+        self.assertEqual(dataset_memory.value_json, str(yield_dataset.id))
+        self.assertEqual(filename_memory.value_json, '"yield_dataset.csv"')
+        self.assertIn("using dataset yield_dataset.csv", response.reply)
+
+    def test_invalid_target_column_returns_available_columns(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "use quality as the target column from now on",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "upsert_project_memory")
+        self.assertIsNone(get_memory(self.db, self.project.id, "selected_target_column"))
+        self.assertIn("Target column 'quality' was not found in any saved project dataset", response.reply)
+        self.assertIn("Available columns are: temperature, pressure, yield.", response.reply)
+
+    def test_train_model_uses_remembered_target_column(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+            "yield",
+            memory_type="user_decision",
+            source="test",
+        )
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "train a model",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "train_baseline_model")
+        self.assertEqual(response.tool_result["target_column"], "yield")
+        self.assertIn(
+            "I used your remembered target column: yield.",
+            response.reply,
+        )
+        self.assertIsNone(get_pending_action(self.db, self.project.id))
+
+    def test_missing_target_memory_falls_back_to_clarification(self) -> None:
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "train a model",
+        )
+
+        self.assertFalse(response.tool_used)
+        self.assertIn("Which target column should I use?", response.reply)
+        self.assertIsNotNone(get_pending_action(self.db, self.project.id))
+
+    def test_memory_does_not_override_explicit_target_column(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+            "yield",
+            memory_type="user_decision",
+            source="test",
+        )
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "train a model using pressure",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "train_baseline_model")
+        self.assertEqual(response.tool_result["target_column"], "pressure")
+        self.assertNotIn("remembered target column", response.reply)
+
     def test_dataset_summary_response_includes_structured_tool_result(self) -> None:
         with patch(
             "app.agent.agent_service.requests.post",
@@ -995,6 +1896,98 @@ class PendingActionAgentTests(unittest.TestCase):
         self.assertEqual(response.tool_result["rows"], 6)
         self.assertIn("yield", response.tool_result["columns"])
         self.assertIn("yield", response.tool_result["numeric_columns"])
+
+    def test_dataset_summary_uses_latest_dataset_id_from_memory(self) -> None:
+        newer_dataset = Dataset(
+            project_id=self.project.id,
+            filename="newer.csv",
+            row_count=6,
+            column_count=3,
+            raw_data_json=json.dumps(
+                [
+                    {"temperature": 10, "quality": 1, "scrap": 0},
+                    {"temperature": 11, "quality": 1, "scrap": 0},
+                    {"temperature": 12, "quality": 0, "scrap": 1},
+                    {"temperature": 13, "quality": 1, "scrap": 0},
+                    {"temperature": 14, "quality": 0, "scrap": 1},
+                    {"temperature": 15, "quality": 1, "scrap": 0},
+                ]
+            ),
+        )
+        self.db.add(newer_dataset)
+        self.db.commit()
+        self.db.refresh(newer_dataset)
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_id",
+            self.dataset.id,
+            memory_type="dataset",
+            source="test",
+        )
+
+        with patch(
+            "app.agent.agent_service.requests.post",
+            side_effect=requests.RequestException,
+        ):
+            response = self.agent.handle_message(
+                self.db,
+                self.project.id,
+                "summarize my dataset",
+            )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "get_dataset_summary")
+        self.assertEqual(response.tool_result["dataset_id"], self.dataset.id)
+        self.assertEqual(response.tool_result["filename"], "pending.csv")
+        self.assertIn(
+            "I used your latest uploaded dataset: pending.csv.",
+            response.reply,
+        )
+
+    def test_explicit_dataset_id_overrides_memory_dataset_id(self) -> None:
+        explicit_dataset = Dataset(
+            project_id=self.project.id,
+            filename="explicit.csv",
+            row_count=6,
+            column_count=3,
+            raw_data_json=json.dumps(
+                [
+                    {"temperature": 10, "quality": 1, "scrap": 0},
+                    {"temperature": 11, "quality": 1, "scrap": 0},
+                    {"temperature": 12, "quality": 0, "scrap": 1},
+                    {"temperature": 13, "quality": 1, "scrap": 0},
+                    {"temperature": 14, "quality": 0, "scrap": 1},
+                    {"temperature": 15, "quality": 1, "scrap": 0},
+                ]
+            ),
+        )
+        self.db.add(explicit_dataset)
+        self.db.commit()
+        self.db.refresh(explicit_dataset)
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "latest_dataset_id",
+            self.dataset.id,
+            memory_type="dataset",
+            source="test",
+        )
+
+        with patch(
+            "app.agent.agent_service.requests.post",
+            side_effect=requests.RequestException,
+        ):
+            response = self.agent.handle_message(
+                self.db,
+                self.project.id,
+                f"summarize dataset {explicit_dataset.id}",
+            )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_result["dataset_id"], explicit_dataset.id)
+        self.assertEqual(response.tool_result["filename"], "explicit.csv")
+        self.assertNotIn("latest uploaded dataset", response.reply)
 
     def test_document_question_with_no_documents_returns_clean_message(self) -> None:
         response = self.agent.handle_message(
@@ -1088,6 +2081,13 @@ class PendingActionAgentTests(unittest.TestCase):
         self.assertIn("top_features", response.tool_result)
         self.assertIsNone(get_pending_action(self.db, self.project.id))
         self.assertEqual(self.db.query(ModelRun).count(), 1)
+        selected_memory = get_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+        )
+        self.assertIsNotNone(selected_memory)
+        self.assertEqual(selected_memory.value_json, '"yield"')
 
     def test_train_model_summary_does_not_include_stale_dataset_list_context(self) -> None:
         with patch(
@@ -1103,6 +2103,102 @@ class PendingActionAgentTests(unittest.TestCase):
         self.assertIn("model run #", response.reply)
         self.assertNotIn("Dataset list is empty", response.reply)
         self.assertNotIn("upload previews", response.reply)
+
+    def test_explain_model_uses_latest_model_run_memory(self) -> None:
+        train_response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "train a model using yield",
+        )
+        model_run_id = train_response.tool_result["model_run_id"]
+
+        with patch(
+            "app.agent.agent_service.requests.post",
+            side_effect=requests.RequestException,
+        ):
+            response = self.agent.handle_message(
+                self.db,
+                self.project.id,
+                "explain the model",
+            )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "explain_latest_model")
+        self.assertEqual(response.tool_result["model_run_id"], model_run_id)
+        self.assertEqual(response.tool_result["target_column"], "yield")
+        self.assertEqual(response.tool_result["task_type"], "regression")
+        self.assertIn("metrics", response.tool_result)
+        self.assertIn("top_features", response.tool_result)
+        self.assertIn(
+            "Feature importance indicates predictive association, not necessarily causation.",
+            response.reply,
+        )
+
+    def test_explain_model_without_model_returns_clean_message(self) -> None:
+        self.db.query(ModelRun).delete()
+        self.db.commit()
+
+        response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "explain latest model",
+        )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "explain_latest_model")
+        self.assertFalse(response.tool_result["model_available"])
+        self.assertEqual(
+            response.reply,
+            "No trained model is available yet. Train a model first.",
+        )
+
+    def test_regular_model_listing_still_works(self) -> None:
+        train_response = self.agent.handle_message(
+            self.db,
+            self.project.id,
+            "train a model using yield",
+        )
+
+        with patch(
+            "app.agent.agent_service.requests.post",
+            side_effect=requests.RequestException,
+        ):
+            response = self.agent.handle_message(
+                self.db,
+                self.project.id,
+                "show previous model runs",
+            )
+
+        self.assertTrue(response.tool_used)
+        self.assertEqual(response.tool_name, "list_model_runs")
+        self.assertIn(f"#{train_response.tool_result['model_run_id']}", response.reply)
+
+    def test_agent_prompt_includes_project_memory_context(self) -> None:
+        upsert_memory(
+            self.db,
+            self.project.id,
+            "selected_target_column",
+            "yield",
+            memory_type="user_decision",
+            source="test",
+        )
+
+        with patch("app.services.llm_chat.requests.post") as mock_post:
+            mock_post.return_value.raise_for_status.return_value = None
+            mock_post.return_value.json.return_value = {"response": "Use yield."}
+
+            response = self.agent.handle_message(
+                self.db,
+                self.project.id,
+                "what should I remember about this project?",
+            )
+
+        prompt = mock_post.call_args.kwargs["json"]["prompt"]
+        self.assertEqual(response.reply, "Use yield.")
+        self.assertIn("Project memory:", prompt)
+        self.assertIn("project_summary", prompt)
+        self.assertIn("selected_target_column", prompt)
+        self.assertIn("yield", prompt)
 
     def test_invalid_column_keeps_pending_action_active(self) -> None:
         self.agent.handle_message(self.db, self.project.id, "train a model")

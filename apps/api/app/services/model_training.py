@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Dataset, ModelRun
 from app.schemas.models import FeatureImportance, ModelRunRead, ModelTrainingResponse
+from app.services.memory_service import update_project_summary, upsert_memory
 
 
 MIN_TRAINING_ROWS = 5
@@ -101,6 +102,39 @@ def train_and_persist_baseline_model(
     db.add(model_run)
     db.commit()
     db.refresh(model_run)
+    upsert_memory(
+        db,
+        project_id,
+        "latest_model_run_id",
+        model_run.id,
+        memory_type="model",
+        source="model_training",
+    )
+    upsert_memory(
+        db,
+        project_id,
+        "selected_target_column",
+        target_column,
+        memory_type="model",
+        source="model_training",
+    )
+    upsert_memory(
+        db,
+        project_id,
+        "target_column",
+        target_column,
+        memory_type="model",
+        source="model_training",
+    )
+    upsert_memory(
+        db,
+        project_id,
+        "latest_task_type",
+        result.problem_type,
+        memory_type="model",
+        source="model_training",
+    )
+    update_project_summary(db, project_id)
 
     return ModelTrainingResponse(
         model_run_id=model_run.id,

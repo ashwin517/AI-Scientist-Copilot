@@ -75,6 +75,8 @@ Workspace persistence endpoints:
 POST http://localhost:8000/projects
 GET  http://localhost:8000/projects
 GET  http://localhost:8000/projects/{project_id}
+GET  http://localhost:8000/projects/{project_id}/memory
+DELETE http://localhost:8000/projects/{project_id}/memory/{key}
 ```
 
 Example project creation:
@@ -101,15 +103,38 @@ http://localhost:3000
 
 ## Current Phase
 
-Phase 2 workspace persistence:
+Phase 7C memory transparency and user-controlled memory editing:
 
-- FastAPI app scaffold
-- Next.js app scaffold
-- PostgreSQL Docker Compose service
-- Clean backend module layout
-- Health endpoint
-- SQLAlchemy `Project` and `Dataset` models
-- Automatic database initialization on API startup
-- Project create/list/detail API routes
+- Project-scoped `ProjectMemory` records store structured JSON facts by key.
+- Dataset uploads update `latest_dataset_id`.
+- Dataset uploads also update `latest_dataset_filename` and `dataset_count`.
+- Document uploads update `latest_document_id`, `latest_document_filename`, and
+  `document_count`.
+- Persistent model training updates `latest_model_run_id`,
+  `selected_target_column`, and `latest_task_type`.
+- Target-column confirmation updates `selected_target_column`.
+- The chat agent includes bounded project memory context in LLM prompts.
+- Dataset tools use remembered `latest_dataset_id` when no explicit dataset is
+  requested.
+- Baseline model training uses remembered `selected_target_column` when the user
+  says "train a model" without naming a target.
+- Model explanation requests use remembered `latest_model_run_id` when
+  available.
+- Explicit user input always overrides remembered memory.
+- Memory can be listed or deleted through project-scoped API routes.
+- Users can ask what the copilot remembers about the current project.
+- Users can add project-local notes with messages like `remember that ...`.
+- Users can delete remembered items with messages like `forget the target column`.
+- Users can set the remembered target column with messages like
+  `use yield_pct as the target column from now on`; the backend validates the
+  column against the active/latest dataset before saving it.
+- The backend maintains a concise `project_summary` memory item for prompt
+  context, refreshed after document/dataset/model/memory changes.
+- The copilot can explain the latest saved model from workspace memory,
+  including metrics, top features, limitations, and next steps without
+  retraining or claiming causality.
+- Deleting projects or data resets empty-table ID sequences for easier local
+  backend debugging; IDs are not reset while rows remain.
 
-No AI chat, dataset upload, ML workflows, or simulation features are implemented yet.
+No vector memory, semantic long-term memory, LangChain, simulation, or
+optimization is included in this phase.

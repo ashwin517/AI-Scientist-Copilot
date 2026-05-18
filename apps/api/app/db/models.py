@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -45,6 +45,26 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
     pending_actions: Mapped[list["AgentPendingAction"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    memories: Mapped[list["ProjectMemory"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    simulation_runs: Mapped[list["SimulationRun"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    optimization_runs: Mapped[list["OptimizationRun"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    workflow_runs: Mapped[list["WorkflowRun"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    reports: Mapped[list["Report"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
     )
@@ -206,6 +226,129 @@ class AgentPendingAction(Base):
     project: Mapped[Project] = relationship(back_populates="pending_actions")
 
 
+class ProjectMemory(Base):
+    __tablename__ = "project_memory"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_project_memory_project_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship(back_populates="memories")
+
+
+class SimulationRun(Base):
+    __tablename__ = "simulation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    simulation_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_json: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship(back_populates="simulation_runs")
+
+
+class OptimizationRun(Base):
+    __tablename__ = "optimization_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    optimization_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    constraints_json: Mapped[str] = mapped_column(Text, nullable=False)
+    search_space_json: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship(back_populates="optimization_runs")
+
+
+class WorkflowRun(Base):
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workflow_type: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    steps_json: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    project: Mapped[Project] = relationship(back_populates="workflow_runs")
+
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    report_type: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    source_summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship(back_populates="reports")
+
+
 __all__ = [
     "Base",
     "Project",
@@ -215,4 +358,9 @@ __all__ = [
     "ChatMessage",
     "ModelRun",
     "AgentPendingAction",
+    "ProjectMemory",
+    "SimulationRun",
+    "OptimizationRun",
+    "WorkflowRun",
+    "Report",
 ]

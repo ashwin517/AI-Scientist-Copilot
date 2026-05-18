@@ -1,6 +1,6 @@
 # Roadmap
 
-## Completed Through Phase 5A
+## Completed Through Phase 10D
 
 - Next.js frontend and FastAPI backend.
 - PostgreSQL and SQLAlchemy project persistence.
@@ -20,6 +20,26 @@
 - Phase 6C backend-only retrieval service over stored document chunk embeddings.
 - Phase 6D standalone document Q&A endpoint with grounded citations.
 - Phase 6E main project chat agent integration for document RAG questions.
+- Phase 7A structured project-scoped memory persistence.
+- Phase 7B memory-aware agent tool behavior for datasets, targets, and latest
+  model runs.
+- Phase 7C memory transparency and user-controlled project memory editing.
+- Phase 7D automatic concise `project_summary` memory for compact agent context.
+- Phase 7E memory-aware latest model explanations from saved metrics and
+  feature importance.
+- Phase 8/9 simulation and optimization foundation for the educational batch
+  reactor benchmark.
+- Phase 9A simple transparent grid-search optimization over batch reactor
+  operating conditions.
+- Phase 9B optimization explanation, top-candidate listing, and next simulated
+  experiment recommendations.
+- Phase 10A synchronous project analysis workflow foundation.
+- Phase 10B workflow history, latest workflow explanation, and latest-vs-previous
+  workflow comparison.
+- Phase 10C deterministic markdown project report generation and report viewer
+  foundation.
+- Phase 10D read-only report review, report listing, and latest report
+  explanation.
 
 ## Phase 5A Scope
 
@@ -38,24 +58,38 @@ text, while existing chat compatibility is preserved through the text response.
 
 Recommended next work:
 
-- Decide how the standalone document Q&A flow should be surfaced in the UI.
-- Harden document RAG intent detection with more examples and evaluation cases.
+- Add focused regression tests for the Phase 10 workflow intent mappings and
+  history/comparison outputs.
+- Add focused regression tests for report generation source summaries and
+  markdown sections.
+- Add focused regression tests for report review section detection and
+  latest-report memory fallback.
+- Add a small frontend Project Memory debug panel if memory inspection becomes
+  useful outside chat.
+- Harden memory intent detection with more examples and evaluation cases.
 - Replace JSON embedding storage with pgvector when database migrations and
   extension setup are introduced.
-- Add document deletion and storage cleanup if document management becomes
-  user-facing beyond upload/list/detail.
-- Add tests around dataset and training tools with a test database.
 - Add richer argument extraction for dataset selection and target columns.
 - Expand pending actions beyond model target-column clarification when new tools
   need multi-turn slot filling.
 - Decide whether structured tool metadata should be persisted with chat history
   for replay after refresh.
-- Design retrieval and source attribution before enabling document-grounded chat.
+- Add a richer optimization result view if optimization workflows become a core
+  workspace surface.
+- Keep the project analysis workflow transparent and synchronous until there is
+  a clear need for background execution or graph orchestration.
 
 Out of scope until later phases:
 
+- Vector or semantic long-term memory.
 - pgvector retrieval and LangChain.
-- Simulation.
-- Optimization.
+- LangGraph workflow orchestration.
+- Background workflow jobs.
+- PDF/DOCX report export.
+- Report editing and revision workflow.
+- Email/share workflows.
+- Bayesian optimization.
+- Historian connector.
+- Autonomous experiment execution.
 - Authentication.
 - Paid model APIs.

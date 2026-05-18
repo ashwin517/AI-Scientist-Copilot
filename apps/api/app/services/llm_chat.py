@@ -29,8 +29,9 @@ def generate_chat_reply(
     message: str,
     dataset_summary: dict[str, Any] | None = None,
     model_result: dict[str, Any] | None = None,
+    project_memory: dict[str, Any] | None = None,
 ) -> ChatResponse:
-    prompt = _build_prompt(message, dataset_summary, model_result)
+    prompt = _build_prompt(message, dataset_summary, model_result, project_memory)
 
     try:
         response = requests.post(
@@ -72,9 +73,11 @@ def _build_prompt(
     message: str,
     dataset_summary: dict[str, Any] | None,
     model_result: dict[str, Any] | None,
+    project_memory: dict[str, Any] | None = None,
 ) -> str:
     dataset_context = _summarize_dataset_context(dataset_summary)
     model_context = _summarize_model_context(model_result)
+    memory_context = _summarize_memory_context(project_memory)
     user_message = _truncate_text(message.strip(), MAX_USER_MESSAGE_CHARACTERS)
 
     prompt = f"""System instruction:
@@ -94,12 +97,26 @@ Dataset context:
 Model context:
 {_to_bounded_json(model_context)}
 
+Project memory:
+{_to_bounded_json(memory_context)}
+
 User question:
 {user_message}
 
 Assistant response:"""
 
     return _truncate_text(prompt, MAX_PROMPT_CHARACTERS)
+
+
+def _summarize_memory_context(
+    project_memory: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if project_memory is None:
+        return {
+            "available": False,
+            "note": "No project memory context was provided.",
+        }
+    return project_memory
 
 
 def _summarize_dataset_context(
